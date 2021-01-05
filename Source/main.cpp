@@ -16,6 +16,9 @@
 #define MENU_MAGNIFIER 10
 #define MENU_NORMAL 11
 
+using namespace glm;
+using namespace std;
+
 GLubyte timer_cnt = 0;
 bool timer_enabled = true;
 unsigned int timer_speed = 16;
@@ -50,9 +53,13 @@ bool using_normal_color = false;
 float magnifyCenter_x = SCR_WIDTH / 2;
 float magnifyCenter_y = SCR_HEIGHT / 2;
 
+// light position
+vec3 light_position = vec3(-31.75, 126.05, 197.72);
+
 // shader
 Shader *castleShader;
 Shader *soldierShader;
+Shader *splatShader;
 Shader *leftScreenShader;
 Shader *rightScreenShader;
 Shader *blurShader;
@@ -64,6 +71,8 @@ string castlePath = "Castle/Castle OBJ.obj";
 Model *castleModel;
 string soldierFiringPath = "soldier_firing/soldier_firing.obj";
 Model *soldierFiringModel;
+string splatPath = "Splat/Splat_01.obj";
+Model *splatModel;
 
 // skybox texture path
 const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps\\posx.jpg",
@@ -103,9 +112,6 @@ unsigned int blurFramebuffer; // for first blur pass
 unsigned int blurColorbuffer;
 unsigned int framebuffer;
 unsigned int textureColorbuffer;
-
-using namespace glm;
-using namespace std;
 
 char** loadShaderSource(const char* file)
 {
@@ -281,9 +287,11 @@ void My_Display()
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	// Draw skybox
+	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*skyboxShader).use();
 	glBindVertexArray(skyboxVAO);
+	(*skyboxShader).setInt("tex_cubemap", 0);
 
 	glm::mat4 pv_matrix = projection * view;
 	(*skyboxShader).setMat4("pv_matrix", pv_matrix);
@@ -304,6 +312,8 @@ void My_Display()
 
 	(*castleShader).setMat4("projection", projection);
 	(*castleShader).setMat4("view", view);
+	(*castleShader).setVec3("light_pos", light_position);
+	(*castleShader).setVec3("eye_pos", camera.Position);
 
 	glm::mat4 model = glm::mat4(1.0f);
 	model = glm::translate(model, glm::vec3(0.0f, -1.75f, 0.0f));
@@ -322,6 +332,8 @@ void My_Display()
 
 	(*soldierShader).setMat4("projection", projection);
 	(*soldierShader).setMat4("view", view);
+	(*soldierShader).setVec3("light_pos", light_position);
+	(*soldierShader).setVec3("eye_pos", camera.Position);
 
 	model = glm::mat4(1.0f);
 	model = glm::translate(model, glm::vec3(-23.0f, 6.75f, 0.0f));
@@ -329,6 +341,29 @@ void My_Display()
 	model = glm::scale(model, glm::vec3(0.5f, 0.5f, 0.5f));
 	(*soldierShader).setMat4("model", model);
 	(*soldierFiringModel).Draw((*soldierShader));
+
+	// render the loaded splat model
+	// --------------------------------------
+	(*splatShader).use();
+	// use normal color
+	if (using_normal_color)
+		(*splatShader).setBool("using_normal_color", 1);
+	else
+		(*splatShader).setBool("using_normal_color", 0);
+
+	(*splatShader).setMat4("projection", projection);
+	(*splatShader).setMat4("view", view);
+	(*splatShader).setVec3("light_pos", light_position);
+	(*splatShader).setVec3("eye_pos", camera.Position);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	(*skyboxShader).setInt("tex_cubemap", 0);
+
+	model = glm::mat4(1.0f);
+	model = glm::translate(model, glm::vec3(-13.0f, -1.5f, -5.0f));
+	model = glm::rotate(model, glm::radians(0.0f), glm::vec3(1.0, 0.0, 0.0));
+	model = glm::scale(model, glm::vec3(0.3f, 0.1f, 0.3f));
+	(*splatShader).setMat4("model", model);
+	(*splatModel).Draw((*splatShader));
 
 	// bind back to default framebuffer
 	// --------------------------------
@@ -616,6 +651,8 @@ int main(int argc, char *argv[])
 	castleShader = &s_castle;
 	Shader s_solider("soldier_model.vs", "soldier_model.fs");
 	soldierShader = &s_solider;
+	Shader s_splat("splat_model.vs", "splat_model.fs");
+	splatShader = &s_splat;
 	Shader s_leftScreen("framebuffers_screen.vs", "post_processing.fs");
 	leftScreenShader = &s_leftScreen;
 	Shader s_rightScreen("framebuffers_screen.vs", "framebuffers_screen.fs");
@@ -628,6 +665,8 @@ int main(int argc, char *argv[])
 	castleModel = &m_castle;
 	Model m_soldierFiring(soldierFiringPath);
 	soldierFiringModel = &m_soldierFiring;
+	Model m_splat(splatPath);
+	splatModel = &m_splat;
 
 	My_Init();
 
