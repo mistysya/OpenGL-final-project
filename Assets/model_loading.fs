@@ -11,7 +11,7 @@ uniform sampler2D texture_diffuse1;
 uniform bool using_normal_color;
 
 // Material properties
-uniform vec3 diffuse_albedo = vec3(1.0);
+uniform vec3 diffuse_albedo = vec3(0.35);
 uniform vec3 specular_albedo = vec3(0.7);
 uniform float specular_power = 200.0;
 
@@ -23,11 +23,12 @@ void main()
     vec3 H = normalize(H);
 
     // Compute the diffuse and specular components for each	fragment
+    vec3 ambient = vec3(0.3);
     vec3 diffuse = max(dot(N, L), 0.0) * diffuse_albedo;
     vec3 specular = pow(max(dot(N, H), 0.0), specular_power) * specular_albedo;
 
     if (using_normal_color)
         FragColor = vec4(Normal, 1.0f);
     else
-        FragColor = texture(texture_diffuse1, TexCoords) * vec4(diffuse + specular, 1.0);
+        FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
 }

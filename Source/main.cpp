@@ -64,6 +64,7 @@ Shader *leftScreenShader;
 Shader *rightScreenShader;
 Shader *blurShader;
 Shader *skyboxShader;
+Shader *depthShader;
 
 // load models
 // -----------
@@ -661,6 +662,9 @@ int main(int argc, char *argv[])
 	blurShader = &s_blur;
 	Shader s_skybox("skybox.vs.glsl", "skybox.fs.glsl");
 	skyboxShader = &s_skybox;
+	Shader s_depth("depth.vs.glsl", "depth.fs.glsl");
+	depthShader = &s_depth;
+
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
 	Model m_soldierFiring(soldierFiringPath);
