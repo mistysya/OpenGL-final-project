@@ -98,6 +98,6 @@ private:
 		Front = glm::normalize(front);
 		// Calculate Right & Up vector
 		Right = glm::normalize(glm::cross(Front, WorldUp));
-		Up = glm::normalize(glm::cross(Right, Front));
+		Up = glm::vec3(0.0, 1.0, 0.0);
 	}
 };

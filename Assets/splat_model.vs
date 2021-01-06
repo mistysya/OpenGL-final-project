@@ -8,6 +8,8 @@ out vec3 Normal;
 out vec3 N;
 out vec3 L;
 out vec3 H;
+out vec3 N_ENV;
+out vec3 ENV;
 
 uniform mat4 model;
 uniform mat4 view;
@@ -20,12 +22,19 @@ uniform vec3 eye_pos;
 void main()
 {
     Normal = aNormal;
-    TexCoords = aTexCoords;
+    TexCoords = aTexCoords; 
 	
 	vec4 P = view * model * vec4(aPos, 1.0);
+	vec4 W = model * vec4(aPos, 1.0);
+
+	// Calculate Bling-Phong vector
 	N = mat3(view * model) * aNormal;
 	L = light_pos;
 	H = light_pos - P.xyz;
+
+	// Calculate ENV view vector
+	N_ENV = mat3(transpose(inverse(model))) * aNormal;
+	ENV = W.xyz - eye_pos;
 
     gl_Position = projection * view * model * vec4(aPos, 1.0);
 }
