@@ -13,15 +13,21 @@ class Shader
 {
 public:
 	unsigned int ID;
-	Shader(const char* vertexPath, const char* fragmentPath)
+	Shader(const char* vertexPath, const char* fragmentPath, const char* tesselControlPath=NULL, const char* tesselEvauatePath=NULL)
 	{
 		std::string vertexCode;
 		std::string fragmentCode;
+		std::string tesselControlCode;
+		std::string tesselEvauateCode;
 		std::ifstream vShaderFile;
 		std::ifstream fShaderFile;
+		std::ifstream tcShaderFile;
+		std::ifstream teShaderFile;
 		// ensure throw exceptions:
 		vShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
 		fShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+		tcShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+		teShaderFile.exceptions(std::ifstream::failbit | std::ifstream::badbit);
 		try
 		{
 			vShaderFile.open(vertexPath);
@@ -34,6 +40,18 @@ public:
 			fShaderFile.close();
 			vertexCode = vShaderStream.str();
 			fragmentCode = fShaderStream.str();
+			// Load tessellation shader GLSL code
+			if (tesselControlPath != NULL && tesselEvauatePath != NULL) {
+				tcShaderFile.open(tesselControlPath);
+				teShaderFile.open(tesselEvauatePath);
+				std::stringstream tcShaderStream, teShaderStream;
+				tcShaderStream << tcShaderFile.rdbuf();
+				teShaderStream << teShaderFile.rdbuf();
+				tcShaderFile.close();
+				teShaderFile.close();
+				tesselControlCode = tcShaderStream.str();
+				tesselEvauateCode = teShaderStream.str();
+			}
 		}
 		catch (std::ifstream::failure e)
 		{
@@ -43,7 +61,7 @@ public:
 		const char* vShaderCode = vertexCode.c_str(); // convert to C type
 		const char * fShaderCode = fragmentCode.c_str();
 		// compile
-		unsigned int vertex, fragment;
+		unsigned int vertex, fragment, tesselControl, tesselEvauate;
 		// vertex shader
 		vertex = glCreateShader(GL_VERTEX_SHADER);
 		glShaderSource(vertex, 1, &vShaderCode, NULL);
@@ -54,15 +72,41 @@ public:
 		glShaderSource(fragment, 1, &fShaderCode, NULL);
 		glCompileShader(fragment);
 		checkCompileErrors(fragment, "FRAGMENT");
+		// If there is tessellation GLSL code
+		if (tesselControlPath != NULL && tesselEvauatePath != NULL) {
+			// convert GLSL code to C type
+			const char* tcShaderCode = tesselControlCode.c_str();
+			const char* teShaderCode = tesselEvauateCode.c_str();
+			// tessellation control Shader
+			tesselControl = glCreateShader(GL_TESS_CONTROL_SHADER);
+			glShaderSource(tesselControl, 1, &tcShaderCode, NULL);
+			glCompileShader(tesselControl);
+			checkCompileErrors(tesselControl, "TESSELLATION_CONTROL");
+			// tessellation evaluation Shader
+			tesselEvauate = glCreateShader(GL_TESS_EVALUATION_SHADER);
+			glShaderSource(tesselEvauate, 1, &teShaderCode, NULL);
+			glCompileShader(tesselEvauate);
+			checkCompileErrors(tesselEvauate, "TESSELLATION_EVALUATION");
+		}
 		// shader Program
 		ID = glCreateProgram();
 		glAttachShader(ID, vertex);
 		glAttachShader(ID, fragment);
+		// If there is tessellation GLSL code
+		if (tesselControlPath != NULL && tesselEvauatePath != NULL) {
+			glAttachShader(ID, tesselControl);
+			glAttachShader(ID, tesselEvauate);
+		}
 		glLinkProgram(ID);
 		checkCompileErrors(ID, "PROGRAM");
 
 		glDeleteShader(vertex);
 		glDeleteShader(fragment);
+		// If there is tessellation GLSL code
+		if (tesselControlPath != NULL && tesselEvauatePath != NULL) {
+			glDeleteShader(tesselControl);
+			glDeleteShader(tesselEvauate);
+		}
 	}
 
 	void use()

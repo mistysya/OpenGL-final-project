@@ -50,6 +50,12 @@ bool using_normal_color = false;
 float magnifyCenter_x = SCR_WIDTH / 2;
 float magnifyCenter_y = SCR_HEIGHT / 2;
 
+// tessellation
+float dmap_depth;
+bool enable_height;
+bool wireframe;
+bool enable_fog;
+
 // shader
 Shader *castleShader;
 Shader *soldierShader;
@@ -57,6 +63,7 @@ Shader *leftScreenShader;
 Shader *rightScreenShader;
 Shader *blurShader;
 Shader *skyboxShader;
+Shader *terrainShader;
 
 // load models
 // -----------
@@ -103,6 +110,9 @@ unsigned int blurFramebuffer; // for first blur pass
 unsigned int blurColorbuffer;
 unsigned int framebuffer;
 unsigned int textureColorbuffer;
+unsigned int terrainVAO;
+unsigned int terrainHeightTexture;
+unsigned int terrainTexture;
 
 using namespace glm;
 using namespace std;
@@ -169,11 +179,9 @@ void My_Init()
 	(*rightScreenShader).use();
 	(*rightScreenShader).setInt("screenTexture", 0);
 
-	(*blurShader).use();
-	(*blurShader).setInt("screenTexture", 0);
-
 	// Load cubemap texture
 	// -----------------------------------------
+	(*skyboxShader).use();
 	glGenTextures(1, &skyboxTexture);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	for (int i = 0; i < 6; ++i)
@@ -192,8 +200,61 @@ void My_Init()
 
 	glGenVertexArrays(1, &skyboxVAO);
 
+	// Terrain configuration
+	// ---------------------
+	dmap_depth = 6.0f;
+	enable_height = true;
+	wireframe = false;
+	enable_fog = false;
+	(*terrainShader).use();
+	glGenVertexArrays(1, &terrainVAO);
+	glBindVertexArray(terrainVAO);
+	// Load Terrain texture
+	// --------------------
+	// height map
+	glEnable(GL_TEXTURE_2D);
+	glGenTextures(1, &terrainHeightTexture);
+	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	int width, height, nrChannels;
+	unsigned char *data = stbi_load("terragen.jpg", &width, &height, &nrChannels, 0);
+	if (data)
+	{
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+	}
+	else
+		std::cout << "Failed to load texture" << std::endl;
+	stbi_image_free(data);
+
+	// terrain color map
+	glActiveTexture(GL_TEXTURE1);
+	glGenTextures(1, &terrainTexture);
+	glBindTexture(GL_TEXTURE_2D, terrainTexture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	data = stbi_load("terragen_color-2.jpg", &width, &height, &nrChannels, 0);
+	if (data)
+	{
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+	}
+	else
+		std::cout << "Failed to load texture" << std::endl;
+	stbi_image_free(data);
+
+	glPatchParameteri(GL_PATCH_VERTICES, 4);
+	//glEnable(GL_CULL_FACE);
+	glBindVertexArray(0);
+
 	// Load noise texture, for watercolor effect
 	// -----------------------------------------
+	(*blurShader).use();
+	(*blurShader).setInt("screenTexture", 0);
+
 	glGenTextures(1, &noiseTexture);
 	glBindTexture(GL_TEXTURE_2D, noiseTexture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -201,8 +262,7 @@ void My_Init()
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	// Load image
-	int width, height, nrChannels;
-	unsigned char *data = stbi_load("noise.jpg", &width, &height, &nrChannels, 0);
+	data = stbi_load("noise.jpg", &width, &height, &nrChannels, 0);
 	if (data)
 	{
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
@@ -292,6 +352,42 @@ void My_Display()
 	glDisable(GL_DEPTH_TEST);
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glEnable(GL_DEPTH_TEST);
+	glBindVertexArray(0);
+
+	// Draw terrain
+	static const GLfloat one = 1.0f;
+	glClearBufferfv(GL_DEPTH, 0, &one);
+	(*terrainShader).use();
+	// Bind Textures using texture units
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
+	(*terrainShader).setInt("tex_displacement", 0);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, terrainTexture);
+	(*terrainShader).setInt("tex_color", 1);
+
+	glBindVertexArray(terrainVAO);
+
+	glm::mat4 terrain_model = glm::mat4(1.0f);
+	terrain_model = glm::translate(terrain_model, glm::vec3(0.0f, -20.0f, 0.0f));
+	terrain_model = glm::scale(terrain_model, glm::vec3(5.0f, 5.0f, 5.0f));
+	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
+	(*terrainShader).setMat4("proj_matrix", projection);
+	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
+	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
+	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
+	(*terrainShader).setInt("tex_color", 1);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+
+	if (wireframe)
+		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	else
+		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
+	glBindVertexArray(0);
 
 	// render the loaded castle model
 	// ------------------------------
@@ -624,6 +720,8 @@ int main(int argc, char *argv[])
 	blurShader = &s_blur;
 	Shader s_skybox("skybox.vs.glsl", "skybox.fs.glsl");
 	skyboxShader = &s_skybox;
+	Shader s_terrain("terrain.vs", "terrain.fs", "terrain.tcs", "terrain.tes");
+	terrainShader = &s_terrain;
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
 	Model m_soldierFiring(soldierFiringPath);
