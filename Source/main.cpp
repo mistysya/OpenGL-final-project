@@ -575,8 +575,8 @@ void My_Display()
 	// shadow uniform
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*castleShader).setInt("shadow_tex", 2);
-	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
+	(*terrainShader).setInt("shadow_tex", 2);
+	(*terrainShader).setMat4("shadow_matrix", shadow_matrix);
 
 	glBindVertexArray(terrainVAO);
 
