@@ -38,6 +38,11 @@ public:
 		loadModel(path);
 	}
 
+	//void Draw_Mesh() {
+	//	for (unsigned int i = 0; i < meshes.size(); i++)
+	//		meshes[i].Draw_mesh();
+	//}
+
 	// draws model
 	void Draw(Shader shader)
 	{

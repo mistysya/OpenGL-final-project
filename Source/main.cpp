@@ -16,6 +16,8 @@
 #define MENU_MAGNIFIER 10
 #define MENU_NORMAL 11
 
+#define SHADOW_MAP_SIZE 1024
+
 using namespace glm;
 using namespace std;
 
@@ -24,8 +26,8 @@ bool timer_enabled = true;
 unsigned int timer_speed = 16;
 
 // window size setting
-const unsigned int SCR_WIDTH = 1280;
-const unsigned int SCR_HEIGHT = 720;
+unsigned int SCR_WIDTH = 1280; // const
+unsigned int SCR_HEIGHT = 720; // const
 
 // timing
 float deltaTime = 0.1f;
@@ -58,8 +60,28 @@ float dmap_depth;
 bool enable_height;
 bool wireframe;
 bool enable_fog;
+
+// model_matrix
+mat4 model_castle;
+mat4 model_splat;
+mat4 model_soldier;
+mat4 terrain_model;
+vector<mat4> model_matrixs;
+
 // light position
-vec3 light_position = vec3(-31.75, 126.05, 197.72);
+vec3 light_position = vec3(0, 300, 500);
+
+//depth
+mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) * scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
+const float shadow_range = 17.0f;
+mat4 light_proj_matrix = ortho(-shadow_range, shadow_range, -shadow_range, shadow_range, 0.0f, 1000.0f);
+mat4 light_view_matrix = lookAt(light_position, vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+mat4 light_vp_matrix = light_proj_matrix * light_view_matrix;
+mat4 shadow_sbpv_matrix = scale_bias_matrix * light_vp_matrix;
+struct {
+	GLuint fbo;
+	GLuint depthMap;
+} shadowBuffer;
 
 // shader
 Shader *castleShader;
@@ -69,8 +91,9 @@ Shader *leftScreenShader;
 Shader *rightScreenShader;
 Shader *blurShader;
 Shader *skyboxShader;
-Shader *terrainShader;
+Shader* terrainShader;
 Shader *depthShader;
+vector<Shader*> Shaders;
 
 // load models
 // -----------
@@ -80,6 +103,7 @@ string soldierFiringPath = "soldier_firing/soldier_firing.obj";
 Model *soldierFiringModel;
 string splatPath = "Splat/Splat_01.obj";
 Model *splatModel;
+vector<Model*> Models;
 
 // skybox texture path
 const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps\\posx.jpg",
@@ -143,6 +167,33 @@ void freeShaderSource(char** srcp)
     delete[] srcp;
 }
 
+mat4 calculate_model(vec3 trans, GLfloat rad, vec3 axis, vec3 scal) {
+	mat4 model = mat4(1.0f);
+	model = glm::translate(model, trans);
+	model = glm::rotate(model, glm::radians(rad), axis);
+	model = glm::scale(model, scal);
+	return model;
+}
+
+void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
+	(*depthShader).use();
+	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
+
+	glClear(GL_DEPTH_BUFFER_BIT);
+	glViewport(0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+	glEnable(GL_POLYGON_OFFSET_FILL);
+	glPolygonOffset(4.0f, 4.0f);
+
+	for (auto i = 0; i < Mod.size(); ++i) {
+		(*depthShader).setMat4("mvp", light_vp_matrix * model_matrix[i]);
+		(*Mod[i]).Draw((*Mod_shader[i]));
+	}
+
+	glDisable(GL_POLYGON_OFFSET_FILL);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+}
+
 void My_Init()
 {
 	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -185,9 +236,11 @@ void My_Init()
 	(*rightScreenShader).use();
 	(*rightScreenShader).setInt("screenTexture", 0);
 
+	(*blurShader).use();
+	(*blurShader).setInt("screenTexture", 0);
+
 	// Load cubemap texture
 	// -----------------------------------------
-	(*skyboxShader).use();
 	glGenTextures(1, &skyboxTexture);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	for (int i = 0; i < 6; ++i)
@@ -226,7 +279,7 @@ void My_Init()
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	int width, height, nrChannels;
-	unsigned char *data = stbi_load("terragen.jpg", &width, &height, &nrChannels, 0);
+	unsigned char* data = stbi_load("terragen.jpg", &width, &height, &nrChannels, 0);
 	if (data)
 	{
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
@@ -258,9 +311,6 @@ void My_Init()
 
 	// Load noise texture, for watercolor effect
 	// -----------------------------------------
-	(*blurShader).use();
-	(*blurShader).setInt("screenTexture", 0);
-
 	glGenTextures(1, &noiseTexture);
 	glBindTexture(GL_TEXTURE_2D, noiseTexture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -268,6 +318,7 @@ void My_Init()
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	// Load image
+	//int width, height, nrChannels;
 	data = stbi_load("noise.jpg", &width, &height, &nrChannels, 0);
 	if (data)
 	{
@@ -279,54 +330,34 @@ void My_Init()
 
 	stbi_image_free(data);
 
-	// framebuffer configuration
-	// -------------------------
-	glGenFramebuffers(1, &blurFramebuffer);
-	glBindFramebuffer(GL_FRAMEBUFFER, blurFramebuffer);
-	// create color attachment texture
-	glGenTextures(1, &blurColorbuffer);
-	glBindTexture(GL_TEXTURE_2D, blurColorbuffer);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, blurColorbuffer, 0);
-
-	// create renderbuffer object
-	unsigned int rbo;
-	glGenRenderbuffers(1, &rbo);
-	glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, SCR_WIDTH, SCR_HEIGHT);
-	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
-	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	// -------------------------
-	glGenFramebuffers(1, &framebuffer);
-	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-	// create color attachment texture
-	glGenTextures(1, &textureColorbuffer);
-	glBindTexture(GL_TEXTURE_2D, textureColorbuffer);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorbuffer, 0);
-
-	// create renderbuffer object
-	
-	glGenRenderbuffers(1, &rbo);
-	glBindRenderbuffer(GL_RENDERBUFFER, rbo);
-	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, SCR_WIDTH, SCR_HEIGHT);
-	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
-	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	
-
+	// calculate model matrix
+	model_castle = calculate_model(vec3(0.0f, -1.75f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f)); 
+	model_splat = calculate_model(vec3(-13.0f, -1.5f, -5.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.3f, 0.1f, 0.3f)); 
+	model_soldier = calculate_model(vec3(-23.0f, 6.75f, 0.0f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
+	terrain_model = calculate_model(vec3(0.0f, -20.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(5.0f, 5.0f, 5.0f));
+	// model_matrix vector
+	model_matrixs.push_back(model_castle);
+	model_matrixs.push_back(model_splat);
+	model_matrixs.push_back(model_soldier);
+	//model_matrixs.push_back(terrain_model);
+	// model vector
+	Models.push_back(castleModel);
+	Models.push_back(splatModel);
+	Models.push_back(soldierFiringModel);
+	// shader vector
+	Shaders.push_back(castleShader);
+	Shaders.push_back(splatShader);
+	Shaders.push_back(soldierShader);
+	//Shaders.push_back(terrainShader);
 }
 
 void My_Display()
 {
+	// shadow test
+	glEnable(GL_DEPTH_TEST);
+	shadow(Models, Shaders, model_matrixs);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	// shadow test end
 
 	// update screen split position
 	glBindBuffer(GL_ARRAY_BUFFER, leftQuadVBO);
@@ -360,7 +391,6 @@ void My_Display()
 	glDisable(GL_DEPTH_TEST);
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glEnable(GL_DEPTH_TEST);
-	glBindVertexArray(0);
 
 	// Draw terrain
 	static const GLfloat one = 1.0f;
@@ -376,9 +406,6 @@ void My_Display()
 
 	glBindVertexArray(terrainVAO);
 
-	glm::mat4 terrain_model = glm::mat4(1.0f);
-	terrain_model = glm::translate(terrain_model, glm::vec3(0.0f, -20.0f, 0.0f));
-	terrain_model = glm::scale(terrain_model, glm::vec3(5.0f, 5.0f, 5.0f));
 	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
 	(*terrainShader).setMat4("proj_matrix", projection);
 	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
@@ -399,44 +426,26 @@ void My_Display()
 
 	// render the loaded castle model
 	// ------------------------------
+	mat4 shadow_matrix = shadow_sbpv_matrix * model_castle;
+
 	(*castleShader).use();
 	// use normal color
 	if (using_normal_color)
 		(*castleShader).setBool("using_normal_color", 1);
 	else
 		(*castleShader).setBool("using_normal_color", 0);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+	(*castleShader).setInt("shadow_tex", 1);
+	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
 
 	(*castleShader).setMat4("projection", projection);
 	(*castleShader).setMat4("view", view);
 	(*castleShader).setVec3("light_pos", light_position);
 	(*castleShader).setVec3("eye_pos", camera.Position);
 
-	glm::mat4 model = glm::mat4(1.0f);
-	model = glm::translate(model, glm::vec3(0.0f, -1.75f, 0.0f));
-	model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
-	(*castleShader).setMat4("model", model);
+	(*castleShader).setMat4("model", model_castle);
 	(*castleModel).Draw((*castleShader));
-
-	// render the loaded soldier firing model
-	// --------------------------------------
-	(*soldierShader).use();
-	// use normal color
-	if (using_normal_color)
-		(*soldierShader).setBool("using_normal_color", 1);
-	else
-		(*soldierShader).setBool("using_normal_color", 0);
-
-	(*soldierShader).setMat4("projection", projection);
-	(*soldierShader).setMat4("view", view);
-	(*soldierShader).setVec3("light_pos", light_position);
-	(*soldierShader).setVec3("eye_pos", camera.Position);
-
-	model = glm::mat4(1.0f);
-	model = glm::translate(model, glm::vec3(-23.0f, 6.75f, 0.0f));
-	model = glm::rotate(model, glm::radians(-90.0f), glm::vec3(1.0, 0.0, 0.0));
-	model = glm::scale(model, glm::vec3(0.5f, 0.5f, 0.5f));
-	(*soldierShader).setMat4("model", model);
-	(*soldierFiringModel).Draw((*soldierShader));
 
 	// render the loaded splat model
 	// --------------------------------------
@@ -454,13 +463,32 @@ void My_Display()
 	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*skyboxShader).setInt("tex_cubemap", 0);
 
-	model = glm::mat4(1.0f);
-	model = glm::translate(model, glm::vec3(-13.0f, -1.5f, -5.0f));
-	model = glm::rotate(model, glm::radians(0.0f), glm::vec3(1.0, 0.0, 0.0));
-	model = glm::scale(model, glm::vec3(0.3f, 0.1f, 0.3f));
-	(*splatShader).setMat4("model", model);
+	(*splatShader).setMat4("model", model_splat);
 	(*splatModel).Draw((*splatShader));
 
+	// render the loaded soldier firing model
+	// --------------------------------------
+	shadow_matrix = shadow_sbpv_matrix * model_soldier;
+	
+	(*soldierShader).use();
+	// use normal color
+	if (using_normal_color)
+		(*soldierShader).setBool("using_normal_color", 1);
+	else
+		(*soldierShader).setBool("using_normal_color", 0);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+	(*soldierShader).setInt("shadow_tex", 1);
+	(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
+
+	(*soldierShader).setMat4("projection", projection);
+	(*soldierShader).setMat4("view", view);
+	(*soldierShader).setVec3("light_pos", light_position);
+	(*soldierShader).setVec3("eye_pos", camera.Position);
+
+	(*soldierShader).setMat4("model", model_soldier);
+	(*soldierFiringModel).Draw((*soldierShader));
+	
 	// bind back to default framebuffer
 	// --------------------------------
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -509,6 +537,70 @@ void My_Display()
 void My_Reshape(int width, int height)
 {
 	glViewport(0, 0, width, height);
+	SCR_WIDTH = width;
+	SCR_HEIGHT = height;
+	magnifyCenter_x = SCR_WIDTH / 2; 
+	magnifyCenter_y = SCR_HEIGHT / 2;
+	prevX = SCR_WIDTH / 2.0f; 
+	lastX = SCR_WIDTH / 2.0f;
+	lastY = SCR_HEIGHT / 2.0f;
+	prevY = SCR_HEIGHT / 2.0f;
+
+	glGenTextures(1, &shadowBuffer.depthMap);
+	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+	
+	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
+	glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadowBuffer.depthMap, 0);
+	/*glDrawBuffer(GL_NONE);
+	glReadBuffer(GL_NONE);*/
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	// framebuffer configuration
+	// -------------------------
+	glGenFramebuffers(1, &blurFramebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, blurFramebuffer);
+	// create color attachment texture
+	glGenTextures(1, &blurColorbuffer);
+	glBindTexture(GL_TEXTURE_2D, blurColorbuffer);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, blurColorbuffer, 0);
+
+	// create renderbuffer object
+	unsigned int rbo;
+	glGenRenderbuffers(1, &rbo);
+	glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, SCR_WIDTH, SCR_HEIGHT);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	// -------------------------
+	glGenFramebuffers(1, &framebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+	// create color attachment texture
+	glGenTextures(1, &textureColorbuffer);
+	glBindTexture(GL_TEXTURE_2D, textureColorbuffer);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorbuffer, 0);
+
+	// create renderbuffer object
+
+	glGenRenderbuffers(1, &rbo);
+	glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, SCR_WIDTH, SCR_HEIGHT);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void My_Timer(int val)
@@ -735,6 +827,10 @@ int main(int argc, char *argv[])
 #else
     glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #endif
+
+	/*glutInitContextVersion(4, 2);
+	glutInitContextProfile(GLUT_CORE_PROFILE);*/
+
 	glutInitWindowPosition(100, 100);
 	glutInitWindowSize(1280, 720);
 	glutCreateWindow("Final_Framework"); // You cannot use OpenGL functions before this line; The OpenGL context must be created first by glutCreateWindow()!
@@ -743,21 +839,21 @@ int main(int argc, char *argv[])
 #endif
 	dumpInfo();
 
-	Shader s_castle("model_loading.vs", "model_loading.fs");
+	Shader s_castle("model_loading.vs.glsl", "model_loading.fs.glsl");
 	castleShader = &s_castle;
-	Shader s_solider("soldier_model.vs", "soldier_model.fs");
+	Shader s_solider("soldier_model.vs.glsl", "soldier_model.fs.glsl");
 	soldierShader = &s_solider;
-	Shader s_splat("splat_model.vs", "splat_model.fs");
+	Shader s_splat("splat_model.vs.glsl", "splat_model.fs.glsl");
 	splatShader = &s_splat;
-	Shader s_leftScreen("framebuffers_screen.vs", "post_processing.fs");
+	Shader s_leftScreen("framebuffers_screen.vs.glsl", "post_processing.fs.glsl");
 	leftScreenShader = &s_leftScreen;
-	Shader s_rightScreen("framebuffers_screen.vs", "framebuffers_screen.fs");
+	Shader s_rightScreen("framebuffers_screen.vs.glsl", "framebuffers_screen.fs.glsl");
 	rightScreenShader = &s_rightScreen;
-	Shader s_blur("framebuffers_screen.vs", "blur.fs");
+	Shader s_blur("framebuffers_screen.vs.glsl", "blur.fs.glsl");
 	blurShader = &s_blur;
 	Shader s_skybox("skybox.vs.glsl", "skybox.fs.glsl");
 	skyboxShader = &s_skybox;
-	Shader s_terrain("terrain.vs", "terrain.fs", "terrain.tcs", "terrain.tes");
+	Shader s_terrain("terrain.vs.glsl", "terrain.fs.glsl", "terrain.tcs", "terrain.tes");
 	terrainShader = &s_terrain;
 	Shader s_depth("depth.vs.glsl", "depth.fs.glsl");
 	depthShader = &s_depth;

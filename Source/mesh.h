@@ -42,6 +42,11 @@ public:
 		setupMesh();
 	}
 
+	//void Draw_mesh() {
+	//	glBindVertexArray(VAO);
+	//	glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
+	//}
+
 	void Draw(Shader shader)
 	{
 		// bind appropriate textures

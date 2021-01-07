@@ -8,6 +8,7 @@ out vec3 Normal;
 out vec3 N;
 out vec3 L;
 out vec3 H;
+out vec4 shadow_coord;
 
 uniform mat4 model;
 uniform mat4 view;
@@ -16,6 +17,9 @@ uniform mat4 projection;
 // Position of light and eyes
 uniform vec3 light_pos;
 uniform vec3 eye_pos;
+
+// shadow
+uniform mat4 shadow_matrix;
 
 void main()
 {
@@ -26,6 +30,8 @@ void main()
 	N = mat3(view * model) * aNormal;
 	L = light_pos;
 	H = light_pos - P.xyz;
+
+	shadow_coord = shadow_matrix * vec4(aPos, 1.0);
 
     gl_Position = projection * view * model * vec4(aPos, 1.0);
 }
