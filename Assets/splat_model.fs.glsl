@@ -1,4 +1,5 @@
-#version 420 core
+#version 430 core
+
 out vec4 FragColor;
 
 in vec3 Normal;
@@ -8,12 +9,15 @@ in vec3 L;
 in vec3 H;
 in vec3 N_ENV;
 in vec3 ENV;
+in vec3 rippleNormal;
+in vec3 rippleView;
 
 uniform samplerCube tex_cubemap;
 uniform sampler2D texture_diffuse1;
 uniform bool using_normal_color;
 
 // Material properties
+const vec4 splatColor = vec4(0.55, 0.8, 0.95, 1.0);
 uniform vec3 diffuse_albedo = vec3(0.35);
 uniform vec3 specular_albedo = vec3(0.7);
 uniform float specular_power = 200.0;
@@ -21,9 +25,10 @@ uniform float specular_power = 200.0;
 void main()
 {
     // Normalize the incoming vectors
-    vec3 N = normalize(N);
+	vec3 V = normalize(rippleView);
+    vec3 N = normalize(rippleNormal);
     vec3 L = normalize(L);
-    vec3 H = normalize(H);
+    vec3 H = normalize(L + V);
 
     // Compute the diffuse and specular components for each	fragment
     vec3 ambient = vec3(0.3);
@@ -37,5 +42,5 @@ void main()
     if (using_normal_color)
         FragColor = vec4(Normal, 1.0f);
     else
-        FragColor = (vec4(0.5, 1.0, 0.8, 1.0) * vec4(ambient + diffuse + specular, 1.0)) * 0.6 + texture(tex_cubemap, R) * 0.4;
+        FragColor = (splatColor * vec4(ambient + diffuse + specular, 1.0)) * 0.6 + texture(tex_cubemap, R) * 0.4;
 }
