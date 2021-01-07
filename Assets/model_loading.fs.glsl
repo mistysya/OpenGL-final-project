@@ -61,8 +61,8 @@ void main()
     else {
         //FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
         //FragColor = vec4(shadow_factor, shadow_factor, shadow_factor, 1.0);
-        //FragColor = texture(texture_diffuse1, TexCoords) * vec4(shadow_factor * (ambient + diffuse + specular), 1.0);
-        FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
+        FragColor = texture(texture_diffuse1, TexCoords) * vec4(shadow_factor * (ambient + diffuse + specular), 1.0);
+        //FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
         //FragColor = vec4(ambient + diffuse + specular, 1.0);
     }
 }
