@@ -52,6 +52,7 @@ bool lbuttonPress = false;
 // post-processing
 int effectID = 1;
 bool using_normal_color = false;
+bool display_normal_mapping = false;
 float magnifyCenter_x = SCR_WIDTH / 2;
 float magnifyCenter_y = SCR_HEIGHT / 2;
 
@@ -146,6 +147,9 @@ unsigned int textureColorbuffer;
 unsigned int terrainVAO;
 unsigned int terrainHeightTexture;
 unsigned int terrainTexture;
+unsigned int castleNormalTexture;
+unsigned int soldierNormalTexture;
+unsigned int terrainNormalTexture;
 
 char** loadShaderSource(const char* file)
 {
@@ -434,9 +438,15 @@ void My_Display()
 		(*castleShader).setBool("using_normal_color", 1);
 	else
 		(*castleShader).setBool("using_normal_color", 0);
-	glActiveTexture(GL_TEXTURE1);
+	// test normal mapping
+	if (display_normal_mapping)
+		(*castleShader).setBool("display_normal_mapping", 1);
+	else
+		(*castleShader).setBool("display_normal_mapping", 0);
+
+	glActiveTexture(GL_TEXTURE1); // NOTICE: change to 2 for normal mapping
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*castleShader).setInt("shadow_tex", 1);
+	(*castleShader).setInt("shadow_tex", 1); // NOTICE: change to 2 for normal mapping
 	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
 
 	(*castleShader).setMat4("projection", projection);
@@ -740,6 +750,9 @@ void My_Keyboard(unsigned char key, int x, int y)
 			break;
 		case 'n':
 			using_normal_color = !using_normal_color;
+			break;
+		case 'p':
+			display_normal_mapping = !display_normal_mapping;
 			break;
 		default:
 			cout << "Nothing" << endl;

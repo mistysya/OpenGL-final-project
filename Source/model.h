@@ -38,11 +38,6 @@ public:
 		loadModel(path);
 	}
 
-	//void Draw_Mesh() {
-	//	for (unsigned int i = 0; i < meshes.size(); i++)
-	//		meshes[i].Draw_mesh();
-	//}
-
 	// draws model
 	void Draw(Shader shader)
 	{
@@ -99,11 +94,20 @@ private:
 			vector.z = mesh->mVertices[i].z;
 			vertex.Position = vector;
 			// normals
-			
+			if (mesh->HasNormals())
+			{
+				vector.x = mesh->mNormals[i].x;
+				vector.y = mesh->mNormals[i].y;
+				vector.z = mesh->mNormals[i].z;
+				vertex.Normal = vector;
+			}
+			/*
+			// normals			
 			vector.x = mesh->mNormals[i].x;
 			vector.y = mesh->mNormals[i].y;
 			vector.z = mesh->mNormals[i].z;
 			vertex.Normal = vector;
+			*/
 			// texture coordinates
 			if (mesh->mTextureCoords[0])
 			{
@@ -111,6 +115,16 @@ private:
 				vec.x = mesh->mTextureCoords[0][i].x;
 				vec.y = mesh->mTextureCoords[0][i].y;
 				vertex.TexCoords = vec;
+				// tangent
+				vector.x = mesh->mTangents[i].x;
+				vector.y = mesh->mTangents[i].y;
+				vector.z = mesh->mTangents[i].z;
+				vertex.Tangent = vector;
+				// bitangent
+				vector.x = mesh->mBitangents[i].x;
+				vector.y = mesh->mBitangents[i].y;
+				vector.z = mesh->mBitangents[i].z;
+				vertex.Bitangent = vector;
 			}
 			else
 				vertex.TexCoords = glm::vec2(0.0f, 0.0f);

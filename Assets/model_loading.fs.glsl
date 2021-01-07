@@ -7,18 +7,37 @@ in vec3 N;
 in vec3 L;
 in vec3 H;
 in vec4 shadow_coord;
+in vec3 tangentLightPos;
+in vec3 tangentViewPos;
+in vec3 tangentFragPos;
 
 uniform sampler2D texture_diffuse1;
+uniform sampler2D texture_normal1; // NOTICE texture index
 uniform sampler2DShadow shadow_tex;
 uniform bool using_normal_color;
+uniform bool display_normal_mapping;
 
 // Material properties
 uniform vec3 diffuse_albedo = vec3(0.35);
 uniform vec3 specular_albedo = vec3(0.7);
 uniform float specular_power = 200.0;
 
+// Position of light and eyes
+uniform vec3 light_pos;
+uniform vec3 eye_pos;
+
 void main()
 {    
+	// Normal Mapping
+	vec3 normal = texture(texture_normal1, TexCoords).rgb;
+	normal = normalize(normal * 2.0 - 1.0);
+	vec3 lightDir = normalize(tangentLightPos - tangentFragPos);
+	float diff = max(dot(lightDir, normal), 0.0);
+	vec3 viewDir = normalize(tangentViewPos - tangentFragPos);
+	vec3 reflectDir = reflect(-lightDir, normal);
+	vec3 halfwayDir = normalize(lightDir + viewDir);
+	float spec = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+
     // Normalize the incoming vectors
     vec3 N = normalize(N);
     vec3 L = normalize(L);
@@ -28,6 +47,13 @@ void main()
     vec3 ambient = vec3(0.3);
     vec3 diffuse = max(dot(N, L), 0.0) * diffuse_albedo;
     vec3 specular = pow(max(dot(N, H), 0.0), specular_power) * specular_albedo;
+
+	// Test Normal Mapping effect
+	if (display_normal_mapping) {
+		diffuse = 0.9 * diffuse + 0.1 * vec3(1.0) * diff;
+		specular = 0.7 * specular + 0.2 * vec3(0.3) * spec;
+	}
+
     float shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.6 + 0.4;
 
     if (using_normal_color)
