@@ -3,6 +3,7 @@
 #include "camera.h"
 //#include "shader_m.h"
 #include "mesh.h"
+#include "time.h"
 
 #define MENU_TIMER_START 1
 #define MENU_TIMER_STOP 2
@@ -16,7 +17,8 @@
 #define MENU_MAGNIFIER 10
 #define MENU_NORMAL 11
 
-#define SHADOW_MAP_SIZE 1024
+#define SHADOW_MAP_WIDTH 7680
+#define SHADOW_MAP_HEIGHT 4320
 
 using namespace glm;
 using namespace std;
@@ -61,6 +63,21 @@ bool enable_height;
 bool wireframe;
 bool enable_fog;
 
+// ssao
+GLuint ssao_vao;
+GLuint kernal_ubo;
+GLuint noise_map;
+GLuint ssao_fbo;
+GLuint ssao_rbo;
+GLuint ssao_tex;
+bool ssao = false;
+struct
+{
+	GLuint fbo;
+	GLuint normal_map;
+	GLuint depth_map;
+} gbuffer;
+
 // model_matrix
 mat4 model_castle;
 mat4 model_splat;
@@ -69,11 +86,11 @@ mat4 terrain_model;
 vector<mat4> model_matrixs;
 
 // light position
-vec3 light_position = vec3(0, 300, 500);
+vec3 light_position = vec3(-50, 45, 76);// vec3(55, 51, 65);
 
 //depth
-mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) * scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
-const float shadow_range = 17.0f;
+mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) *scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
+const float shadow_range = 75.0f;
 mat4 light_proj_matrix = ortho(-shadow_range, shadow_range, -shadow_range, shadow_range, 0.0f, 1000.0f);
 mat4 light_view_matrix = lookAt(light_position, vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
 mat4 light_vp_matrix = light_proj_matrix * light_view_matrix;
@@ -93,6 +110,7 @@ Shader *blurShader;
 Shader *skyboxShader;
 Shader* terrainShader;
 Shader *depthShader;
+Shader *ssaoShader;
 vector<Shader*> Shaders;
 
 // load models
@@ -149,22 +167,22 @@ unsigned int terrainTexture;
 
 char** loadShaderSource(const char* file)
 {
-    FILE* fp = fopen(file, "rb");
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    char *src = new char[sz + 1];
-    fread(src, sizeof(char), sz, fp);
-    src[sz] = '\0';
-    char **srcp = new char*[1];
-    srcp[0] = src;
-    return srcp;
+	FILE* fp = fopen(file, "rb");
+	fseek(fp, 0, SEEK_END);
+	long sz = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+	char *src = new char[sz + 1];
+	fread(src, sizeof(char), sz, fp);
+	src[sz] = '\0';
+	char **srcp = new char*[1];
+	srcp[0] = src;
+	return srcp;
 }
 
 void freeShaderSource(char** srcp)
 {
-    delete[] srcp[0];
-    delete[] srcp;
+	delete[] srcp[0];
+	delete[] srcp;
 }
 
 mat4 calculate_model(vec3 trans, GLfloat rad, vec3 axis, vec3 scal) {
@@ -179,16 +197,26 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 	(*depthShader).use();
 	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
 
-	glClear(GL_DEPTH_BUFFER_BIT);
-	glViewport(0, 0, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	glViewport(0, 0, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
 	glEnable(GL_POLYGON_OFFSET_FILL);
 	glPolygonOffset(4.0f, 4.0f);
+	glCullFace(GL_FRONT);
+
+	(*depthShader).setMat4("mvp", light_vp_matrix * terrain_model);
+	if (wireframe)
+		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	else
+		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+	glBindVertexArray(terrainVAO);
+	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
 
 	for (auto i = 0; i < Mod.size(); ++i) {
 		(*depthShader).setMat4("mvp", light_vp_matrix * model_matrix[i]);
 		(*Mod[i]).Draw((*Mod_shader[i]));
 	}
-
+	glCullFace(GL_BACK);
 	glDisable(GL_POLYGON_OFFSET_FILL);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
@@ -235,6 +263,7 @@ void My_Init()
 
 	(*rightScreenShader).use();
 	(*rightScreenShader).setInt("screenTexture", 0);
+	(*rightScreenShader).setInt("ssaoTexture", 1);
 
 	(*blurShader).use();
 	(*blurShader).setInt("screenTexture", 0);
@@ -331,15 +360,15 @@ void My_Init()
 	stbi_image_free(data);
 
 	// calculate model matrix
-	model_castle = calculate_model(vec3(0.0f, -1.75f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f)); 
-	model_splat = calculate_model(vec3(-13.0f, -1.5f, -5.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.3f, 0.1f, 0.3f)); 
-	model_soldier = calculate_model(vec3(-23.0f, 6.75f, 0.0f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
 	terrain_model = calculate_model(vec3(0.0f, -20.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(5.0f, 5.0f, 5.0f));
+	model_castle = calculate_model(vec3(0.0f, -1.75f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	model_splat = calculate_model(vec3(-13.0f, -1.5f, -5.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.3f, 0.1f, 0.3f));
+	model_soldier = calculate_model(vec3(-23.0f, 6.75f, 0.0f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
 	// model_matrix vector
+	//model_matrixs.push_back(terrain_model);
 	model_matrixs.push_back(model_castle);
 	model_matrixs.push_back(model_splat);
 	model_matrixs.push_back(model_soldier);
-	//model_matrixs.push_back(terrain_model);
 	// model vector
 	Models.push_back(castleModel);
 	Models.push_back(splatModel);
@@ -349,6 +378,135 @@ void My_Init()
 	Shaders.push_back(splatShader);
 	Shaders.push_back(soldierShader);
 	//Shaders.push_back(terrainShader);
+
+	// Set up ssao
+	// -----------------------------------------
+	(*ssaoShader).use();
+	(*ssaoShader).setBlock("Kernels");
+
+	glGenVertexArrays(1, &ssao_vao);
+	glBindVertexArray(ssao_vao);
+
+	// Begin Initialize Kernal UBO
+	glGenBuffers(1, &kernal_ubo);
+	glBindBuffer(GL_UNIFORM_BUFFER, kernal_ubo);
+	vec4 kernals[32];
+	srand(time(NULL));
+	for (int i = 0; i < 32; ++i)
+	{
+		float scale = i / 32.0;
+		scale = 0.1f + 0.9f * scale * scale;
+		kernals[i] = vec4(normalize(vec3(
+			rand() / (float)RAND_MAX * 2.0f - 1.0f,
+			rand() / (float)RAND_MAX * 2.0f - 1.0f,
+			rand() / (float)RAND_MAX * 0.85f + 0.15f)) * scale,
+			0.0f
+		);
+	}
+	glBufferData(GL_UNIFORM_BUFFER, 32 * sizeof(vec4), &kernals[0][0], GL_STATIC_DRAW);
+
+	// Begin Initialize Random Noise Map
+	glGenTextures(1, &noise_map);
+	glBindTexture(GL_TEXTURE_2D, noise_map);
+	vec3 noiseData[16];
+	for (int i = 0; i < 16; ++i)
+	{
+		noiseData[i] = normalize(vec3(
+			rand() / (float)RAND_MAX, // 0.0 ~ 1.0
+			rand() / (float)RAND_MAX, // 0.0 ~ 1.0
+			0.0f
+		));
+	}
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 4, 4, 0, GL_RGB, GL_FLOAT, &noiseData[0][0]);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+	// Begin Initialize G Buffer
+	glGenFramebuffers(1, &gbuffer.fbo);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer.fbo);
+
+	glGenTextures(2, &gbuffer.normal_map);
+	glBindTexture(GL_TEXTURE_2D, gbuffer.normal_map);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glBindTexture(GL_TEXTURE_2D, gbuffer.depth_map);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, SCR_WIDTH, SCR_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuffer.normal_map, 0);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gbuffer.depth_map, 0);
+
+	glGenFramebuffers(1, &ssao_fbo);
+}
+
+void Render_Loaded_Model(mat4 projection, mat4 view)
+{
+	// render the loaded castle model
+	// --------------------------------------
+	mat4 shadow_matrix = shadow_sbpv_matrix * model_castle;
+
+	(*castleShader).use();
+	// use normal color
+	if (using_normal_color)
+		(*castleShader).setBool("using_normal_color", 1);
+	else
+		(*castleShader).setBool("using_normal_color", 0);
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+	(*castleShader).setInt("shadow_tex", 2);
+	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
+
+	(*castleShader).setMat4("projection", projection);
+	(*castleShader).setMat4("view", view);
+	(*castleShader).setVec3("light_pos", light_position);
+	(*castleShader).setVec3("eye_pos", camera.Position);
+
+	(*castleShader).setMat4("model", model_castle);
+	(*castleModel).Draw((*castleShader));
+
+	// render the loaded splat model
+	// --------------------------------------
+	(*splatShader).use();
+	// use normal color
+	if (using_normal_color)
+		(*splatShader).setBool("using_normal_color", 1);
+	else
+		(*splatShader).setBool("using_normal_color", 0);
+
+	(*splatShader).setMat4("projection", projection);
+	(*splatShader).setMat4("view", view);
+	(*splatShader).setVec3("light_pos", light_position);
+	(*splatShader).setVec3("eye_pos", camera.Position);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	(*skyboxShader).setInt("tex_cubemap", 0);
+
+	(*splatShader).setMat4("model", model_splat);
+	(*splatModel).Draw((*splatShader));
+
+	// render the loaded soldier firing model
+	// --------------------------------------
+	shadow_matrix = shadow_sbpv_matrix * model_soldier;
+
+	(*soldierShader).use();
+	// use normal color
+	if (using_normal_color)
+		(*soldierShader).setBool("using_normal_color", 1);
+	else
+		(*soldierShader).setBool("using_normal_color", 0);
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+	(*soldierShader).setInt("shadow_tex", 2);
+	(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
+
+	(*soldierShader).setMat4("projection", projection);
+	(*soldierShader).setMat4("view", view);
+	(*soldierShader).setVec3("light_pos", light_position);
+	(*soldierShader).setVec3("eye_pos", camera.Position);
+
+	(*soldierShader).setMat4("model", model_soldier);
+	(*soldierFiringModel).Draw((*soldierShader));
 }
 
 void My_Display()
@@ -393,6 +551,7 @@ void My_Display()
 	glEnable(GL_DEPTH_TEST);
 
 	// Draw terrain
+	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
 	static const GLfloat one = 1.0f;
 	glClearBufferfv(GL_DEPTH, 0, &one);
 	(*terrainShader).use();
@@ -403,6 +562,12 @@ void My_Display()
 	glActiveTexture(GL_TEXTURE1);
 	glBindTexture(GL_TEXTURE_2D, terrainTexture);
 	(*terrainShader).setInt("tex_color", 1);
+
+	// shadow uniform
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+	(*castleShader).setInt("shadow_tex", 2);
+	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
 
 	glBindVertexArray(terrainVAO);
 
@@ -424,77 +589,61 @@ void My_Display()
 	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
 	glBindVertexArray(0);
 
-	// render the loaded castle model
+	// render the loaded models
 	// ------------------------------
-	mat4 shadow_matrix = shadow_sbpv_matrix * model_castle;
+	Render_Loaded_Model(projection, view);
 
-	(*castleShader).use();
-	// use normal color
-	if (using_normal_color)
-		(*castleShader).setBool("using_normal_color", 1);
-	else
-		(*castleShader).setBool("using_normal_color", 0);
+	// draw ssao
+	// --------------------------------
+	// Begin Depth - Normal Pass
+	static const GLfloat white[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	static const GLfloat black[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+	static const GLfloat ones[] = { 1.0f };
+
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer.fbo);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	glClearBufferfv(GL_COLOR, 0, black);
+	glClearBufferfv(GL_DEPTH, 0, ones);
+
+	// render the loaded models
+	// ------------------------------
+	using_normal_color = true;
+	Render_Loaded_Model(projection, view);
+	using_normal_color = false;
+
+	// Begin SSAO Pass
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao_fbo);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	glClearBufferfv(GL_COLOR, 0, white);
+	(*ssaoShader).use();
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, gbuffer.normal_map);
+	(*ssaoShader).setInt("normal_map", 0);
+
 	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*castleShader).setInt("shadow_tex", 1);
-	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
+	glBindTexture(GL_TEXTURE_2D, gbuffer.depth_map);
+	(*ssaoShader).setInt("depth_map", 1);
+	(*ssaoShader).setMat4("proj", projection);
 
-	(*castleShader).setMat4("projection", projection);
-	(*castleShader).setMat4("view", view);
-	(*castleShader).setVec3("light_pos", light_position);
-	(*castleShader).setVec3("eye_pos", camera.Position);
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, noise_map);
+	(*ssaoShader).setInt("noise_map", 2);
 
-	(*castleShader).setMat4("model", model_castle);
-	(*castleModel).Draw((*castleShader));
+	(*ssaoShader).set2Float("noise_scale", SCR_WIDTH / 4.0f, SCR_HEIGHT / 4.0f);
+	glBindBufferBase(GL_UNIFORM_BUFFER, 0, kernal_ubo);
 
-	// render the loaded splat model
-	// --------------------------------------
-	(*splatShader).use();
-	// use normal color
-	if (using_normal_color)
-		(*splatShader).setBool("using_normal_color", 1);
-	else
-		(*splatShader).setBool("using_normal_color", 0);
+	glDisable(GL_DEPTH_TEST);
+	glBindVertexArray(ssao_vao);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glEnable(GL_DEPTH_TEST);
 
-	(*splatShader).setMat4("projection", projection);
-	(*splatShader).setMat4("view", view);
-	(*splatShader).setVec3("light_pos", light_position);
-	(*splatShader).setVec3("eye_pos", camera.Position);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
-	(*skyboxShader).setInt("tex_cubemap", 0);
-
-	(*splatShader).setMat4("model", model_splat);
-	(*splatModel).Draw((*splatShader));
-
-	// render the loaded soldier firing model
-	// --------------------------------------
-	shadow_matrix = shadow_sbpv_matrix * model_soldier;
-	
-	(*soldierShader).use();
-	// use normal color
-	if (using_normal_color)
-		(*soldierShader).setBool("using_normal_color", 1);
-	else
-		(*soldierShader).setBool("using_normal_color", 0);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*soldierShader).setInt("shadow_tex", 1);
-	(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
-
-	(*soldierShader).setMat4("projection", projection);
-	(*soldierShader).setMat4("view", view);
-	(*soldierShader).setVec3("light_pos", light_position);
-	(*soldierShader).setVec3("eye_pos", camera.Position);
-
-	(*soldierShader).setMat4("model", model_soldier);
-	(*soldierFiringModel).Draw((*soldierShader));
-	
 	// bind back to default framebuffer
 	// --------------------------------
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glDisable(GL_DEPTH_TEST);
 	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	if (effectID == 3) { // for bloom effect, first blur pass
 		(*blurShader).use();
@@ -526,12 +675,14 @@ void My_Display()
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 
 	(*rightScreenShader).use();
-	glActiveTexture(GL_TEXTURE0);
 	glBindVertexArray(rightQuadVAO);
+	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, textureColorbuffer);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, ssao_tex);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 
-    glutSwapBuffers();
+	glutSwapBuffers();
 }
 
 void My_Reshape(int width, int height)
@@ -539,26 +690,27 @@ void My_Reshape(int width, int height)
 	glViewport(0, 0, width, height);
 	SCR_WIDTH = width;
 	SCR_HEIGHT = height;
-	magnifyCenter_x = SCR_WIDTH / 2; 
+	magnifyCenter_x = SCR_WIDTH / 2;
 	magnifyCenter_y = SCR_HEIGHT / 2;
-	prevX = SCR_WIDTH / 2.0f; 
+	prevX = SCR_WIDTH / 2.0f;
 	lastX = SCR_WIDTH / 2.0f;
 	lastY = SCR_HEIGHT / 2.0f;
 	prevY = SCR_HEIGHT / 2.0f;
 
+	glGenFramebuffers(1, &shadowBuffer.fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
 	glGenTextures(1, &shadowBuffer.depthMap);
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
-	
-	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
+
 	glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadowBuffer.depthMap, 0);
-	/*glDrawBuffer(GL_NONE);
-	glReadBuffer(GL_NONE);*/
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glDrawBuffer(GL_NONE);
+	glReadBuffer(GL_NONE);
+	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	// framebuffer configuration
 	// -------------------------
@@ -580,7 +732,7 @@ void My_Reshape(int width, int height)
 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	// -------------------------
 	glGenFramebuffers(1, &framebuffer);
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -601,6 +753,34 @@ void My_Reshape(int width, int height)
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	// create rbos and textures for ssao here!!! 
+	// ---------------------------
+	glDeleteRenderbuffers(1, &ssao_rbo);
+	glDeleteTextures(1, &ssao_tex);
+
+	glGenRenderbuffers(1, &ssao_rbo);
+	glBindRenderbuffer(GL_RENDERBUFFER, ssao_rbo);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32, width, height);
+
+	// create ssao fbo texture
+	glGenTextures(1, &ssao_tex);
+	glBindTexture(GL_TEXTURE_2D, ssao_tex);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	// bind to ssao fbo
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao_fbo);
+	glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ssao_rbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssao_tex, 0);
+
+	glBindTexture(GL_TEXTURE_2D, gbuffer.normal_map);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, NULL);
+	glBindTexture(GL_TEXTURE_2D, gbuffer.depth_map);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 }
 
 void My_Timer(int val)
@@ -710,47 +890,51 @@ void My_Keyboard(unsigned char key, int x, int y)
 {
 	switch (key)
 	{
-		case 'w':
-			camera.ProcessKeyboard(FORWARD, deltaTime);
-			break;
-		case 's':
-			camera.ProcessKeyboard(BACKWARD, deltaTime);
-			break;
-		case 'a':
-			camera.ProcessKeyboard(LEFT, deltaTime);
-			break;
-		case 'd':
-			camera.ProcessKeyboard(RIGHT, deltaTime);
-			break;
-		case 'z':
-			camera.ProcessKeyboard(UP, deltaTime);
-			break;
-		case 'x':
-			camera.ProcessKeyboard(DOWN, deltaTime);
-			break;
-		case 'q':
-			effectID -= 1;
-			effectID += 7;
-			effectID %= 7;
-			break;
-		case 'e':
-			effectID += 1;
-			effectID += 7;
-			effectID %= 7;
-			break;
-		case 'n':
-			using_normal_color = !using_normal_color;
-			break;
-		default:
-			cout << "Nothing" << endl;
-			break;
+	case 'w':
+		camera.ProcessKeyboard(FORWARD, deltaTime);
+		break;
+	case 's':
+		camera.ProcessKeyboard(BACKWARD, deltaTime);
+		break;
+	case 'a':
+		camera.ProcessKeyboard(LEFT, deltaTime);
+		break;
+	case 'd':
+		camera.ProcessKeyboard(RIGHT, deltaTime);
+		break;
+	case 'z':
+		camera.ProcessKeyboard(UP, deltaTime);
+		break;
+	case 'x':
+		camera.ProcessKeyboard(DOWN, deltaTime);
+		break;
+	case 'q':
+		effectID -= 1;
+		effectID += 7;
+		effectID %= 7;
+		break;
+	case 'e':
+		effectID += 1;
+		effectID += 7;
+		effectID %= 7;
+		break;
+	case 'n':
+		using_normal_color = !using_normal_color;
+		break;
+	case 'o':
+		ssao = !ssao;
+		(*rightScreenShader).setBool("ssao", ssao);
+		break;
+	default:
+		cout << "Nothing" << endl;
+		break;
 	}
 	glutPostRedisplay();
 }
 
 void My_SpecialKeys(int key, int x, int y)
 {
-	switch(key)
+	switch (key)
 	{
 	case GLUT_KEY_F1:
 		printf("F1 is pressed at (%d, %d)\n", x, y);
@@ -769,10 +953,10 @@ void My_SpecialKeys(int key, int x, int y)
 
 void My_Menu(int id)
 {
-	switch(id)
+	switch (id)
 	{
 	case MENU_TIMER_START:
-		if(!timer_enabled)
+		if (!timer_enabled)
 		{
 			timer_enabled = true;
 			glutTimerFunc(timer_speed, My_Timer, 0);
@@ -816,8 +1000,8 @@ void My_Menu(int id)
 int main(int argc, char *argv[])
 {
 #ifdef __APPLE__
-    // Change working directory to source code path
-    chdir(__FILEPATH__("/../Assets/"));
+	// Change working directory to source code path
+	chdir(__FILEPATH__("/../Assets/"));
 #endif
 	// Initialize GLUT and GLEW, then create a window.
 	////////////////////
@@ -825,11 +1009,11 @@ int main(int argc, char *argv[])
 #ifdef _MSC_VER
 	glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #else
-    glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
+	glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #endif
 
-	/*glutInitContextVersion(4, 2);
-	glutInitContextProfile(GLUT_CORE_PROFILE);*/
+	//glutInitContextVersion(4, 2);
+	//glutInitContextProfile(GLUT_CORE_PROFILE);
 
 	glutInitWindowPosition(100, 100);
 	glutInitWindowSize(1280, 720);
@@ -857,6 +1041,8 @@ int main(int argc, char *argv[])
 	terrainShader = &s_terrain;
 	Shader s_depth("depth.vs.glsl", "depth.fs.glsl");
 	depthShader = &s_depth;
+	Shader s_ssao("ssao.vs.glsl", "ssao.fs.glsl");
+	ssaoShader = &s_ssao;
 
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
@@ -902,7 +1088,7 @@ int main(int argc, char *argv[])
 	glutPassiveMotionFunc(My_Mouse_Move);
 	glutKeyboardFunc(My_Keyboard);
 	glutSpecialFunc(My_SpecialKeys);
-	glutTimerFunc(timer_speed, My_Timer, 0); 
+	glutTimerFunc(timer_speed, My_Timer, 0);
 
 	// Enter main event loop.
 	glutMainLoop();
