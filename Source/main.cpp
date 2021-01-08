@@ -72,7 +72,7 @@ vector<mat4> model_matrixs;
 glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
 
 // light position
-vec3 light_position = vec3(-50, 45, 76);// vec3(-50, 45, 76);
+vec3 light_position = vec3(0, 45, 76);// vec3(-50, 45, 76);
 
 // shadow
 mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) *scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
@@ -206,7 +206,7 @@ void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4>
 	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 }
 
-void CSM_uniform(mat4 model) {
+void CSM_uniform(Shader* shader,mat4 model) {
 	// cascade shadow
 	for (int i = 0; i < NUM_CSM; ++i) {
 
@@ -215,17 +215,17 @@ void CSM_uniform(mat4 model) {
 		oss << "shadow_texes[" << i << "]";
 		glActiveTexture(GL_TEXTURE3 + i);
 		glBindTexture(GL_TEXTURE_2D, shadowBuffers[i].depthMap);
-		(*soldierShader).setInt(oss.str(), 3 + i);
+		(*shader).setInt(oss.str(), 3 + i);
 
 		// shadow matrices
 		ostringstream oss1;
 		oss1 << "shadow_matrices[" << i << "]";
-		(*soldierShader).setMat4(oss1.str(), shadow_sbpv_matrices[i] * model);
+		(*shader).setMat4(oss1.str(), shadow_sbpv_matrices[i] * model);
 
 		// range
 		ostringstream oss2;
 		oss2 << "uCascadedRange_C[" << i << "]";
-		(*soldierShader).setFloat(oss2.str(), csm_range_C[i]);
+		(*shader).setFloat(oss2.str(), csm_range_C[i]);
 	}
 }
 
@@ -402,15 +402,15 @@ void My_Init()
 
 	// split frustum into NUM_CSM + 1 levels (flip-z)
 	csm_range[0] = -0.1f; // near plane
-	csm_range[1] = -150.f;
-	csm_range[2] = -300.f;
-	csm_range[3] = -1000.0f; // far plane
+	csm_range[1] = -50.f;
+	csm_range[2] = -200.f;
+	csm_range[3] = -500.0f; // far plane
 
 	//mat4 proj_matrix = perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.f);
 	// change to clip space
 	for (int i = 0; i < NUM_CSM; ++i) {
 		vec4 view(0.f, 0.f, csm_range[i + 1], 1.f);
-		//vec4 view(50.f, -45.f, csm_range[i + 1], 1.f);
+		//vec4 view(csm_range[i + 1], 0.f, csm_range[i + 1], 1.f);
 		vec4 clip = projection * view;
 		csm_range_C[i] = clip.z;
 	}
@@ -583,7 +583,7 @@ void My_Display()
 	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
 
 	// cascade shadow
-	CSM_uniform(model_castle);
+	CSM_uniform(castleShader, model_castle);
 
 	(*castleShader).setMat4("projection", projection);
 	(*castleShader).setMat4("view", view);
@@ -628,7 +628,7 @@ void My_Display()
 	(*soldierShader).setInt("shadow_tex", 2);
 	(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
 	// cascade shadow
-	CSM_uniform(model_soldier);
+	CSM_uniform(soldierShader, model_soldier);
 
 	(*soldierShader).setMat4("projection", projection);
 	(*soldierShader).setMat4("view", view);
@@ -971,8 +971,8 @@ int main(int argc, char *argv[])
     glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #endif
 
-	glutInitContextVersion(4, 2);
-	glutInitContextProfile(GLUT_CORE_PROFILE);
+	//glutInitContextVersion(4, 2);
+	//glutInitContextProfile(GLUT_CORE_PROFILE);
 
 	glutInitWindowPosition(100, 100);
 	glutInitWindowSize(1280, 720);
