@@ -1,6 +1,8 @@
 #version 420 core
 out vec4 FragColor;
 
+const int NUM_CSM = 3;
+
 in vec3 Normal;
 in vec2 TexCoords;
 in vec3 N;
@@ -12,10 +14,12 @@ in vec3 tangentViewPos;
 in vec3 tangentFragPos;
 
 uniform sampler2D texture_diffuse1;
-uniform sampler2D texture_normal1; // NOTICE texture index
 uniform sampler2DShadow shadow_tex;
+uniform sampler2DShadow shadow_texes[NUM_CSM];
 uniform bool using_normal_color;
-uniform bool display_normal_mapping;
+
+// CSM
+uniform float uCascadedRange_C[NUM_CSM];
 
 // Material properties
 uniform vec3 diffuse_albedo = vec3(0.35);
@@ -55,6 +59,14 @@ void main()
 	}
 
     float shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.6 + 0.4;
+    // CSM
+    for (int i = 0; i < NUM_CSM; ++i) {
+        if (depth_current_position <= uCascadedRange_C[i]) {
+            shadow_factor = textureProj(shadow_texes[i], CSM_coord[i]) * 0.8 + 0.2;
+        }
+    }
+    // SM
+    //shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.8 + 0.2;
 
     if (using_normal_color)
         FragColor = vec4(Normal, 1.0f);

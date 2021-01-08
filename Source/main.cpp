@@ -3,7 +3,7 @@
 #include "camera.h"
 //#include "shader_m.h"
 #include "mesh.h"
-#include "time.h"
+#include "csm_helper.h"
 
 #define MENU_TIMER_START 1
 #define MENU_TIMER_STOP 2
@@ -54,7 +54,6 @@ bool lbuttonPress = false;
 // post-processing
 int effectID = 1;
 bool using_normal_color = false;
-bool display_normal_mapping = false;
 float magnifyCenter_x = SCR_WIDTH / 2;
 float magnifyCenter_y = SCR_HEIGHT / 2;
 
@@ -64,42 +63,33 @@ bool enable_height;
 bool wireframe;
 bool enable_fog;
 
-// ssao
-GLuint ssao_vao;
-GLuint kernal_ubo;
-GLuint noise_map;
-GLuint ssao_fbo;
-GLuint ssao_rbo;
-GLuint ssao_tex;
-bool ssao = false;
-struct
-{
-	GLuint fbo;
-	GLuint normal_map;
-	GLuint depth_map;
-} gbuffer;
-
 // model_matrix
 mat4 model_castle;
 mat4 model_splat;
 mat4 model_soldier;
 mat4 terrain_model;
 vector<mat4> model_matrixs;
+glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
 
 // light position
-vec3 light_position = vec3(-50, 45, 76);// vec3(55, 51, 65);
+vec3 light_position = vec3(-50, 45, 76);// vec3(-50, 45, 76);
 
-//depth
+// shadow
 mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) *scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
 const float shadow_range = 75.0f;
 mat4 light_proj_matrix = ortho(-shadow_range, shadow_range, -shadow_range, shadow_range, 0.0f, 1000.0f);
 mat4 light_view_matrix = lookAt(light_position, vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
 mat4 light_vp_matrix = light_proj_matrix * light_view_matrix;
 mat4 shadow_sbpv_matrix = scale_bias_matrix * light_vp_matrix;
-struct {
-	GLuint fbo;
-	GLuint depthMap;
-} shadowBuffer;
+// CSM
+vector<mat4> light_vp_matrices;
+vector<mat4> shadow_sbpv_matrices;
+
+frame_t shadowBuffer; //shadow
+vector<frame_t> shadowBuffers; // cascade shadow mapping
+
+float csm_range[NUM_CSM + 1];
+float csm_range_C[NUM_CSM];
 
 // shader
 Shader *castleShader;
@@ -111,7 +101,6 @@ Shader *blurShader;
 Shader *skyboxShader;
 Shader* terrainShader;
 Shader *depthShader;
-Shader *ssaoShader;
 vector<Shader*> Shaders;
 
 // load models
@@ -165,28 +154,25 @@ unsigned int textureColorbuffer;
 unsigned int terrainVAO;
 unsigned int terrainHeightTexture;
 unsigned int terrainTexture;
-unsigned int castleNormalTexture;
-unsigned int soldierNormalTexture;
-unsigned int terrainNormalTexture;
 
 char** loadShaderSource(const char* file)
 {
-	FILE* fp = fopen(file, "rb");
-	fseek(fp, 0, SEEK_END);
-	long sz = ftell(fp);
-	fseek(fp, 0, SEEK_SET);
-	char *src = new char[sz + 1];
-	fread(src, sizeof(char), sz, fp);
-	src[sz] = '\0';
-	char **srcp = new char*[1];
-	srcp[0] = src;
-	return srcp;
+    FILE* fp = fopen(file, "rb");
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *src = new char[sz + 1];
+    fread(src, sizeof(char), sz, fp);
+    src[sz] = '\0';
+    char **srcp = new char*[1];
+    srcp[0] = src;
+    return srcp;
 }
 
 void freeShaderSource(char** srcp)
 {
-	delete[] srcp[0];
-	delete[] srcp;
+    delete[] srcp[0];
+    delete[] srcp;
 }
 
 mat4 calculate_model(vec3 trans, GLfloat rad, vec3 axis, vec3 scal) {
@@ -195,6 +181,52 @@ mat4 calculate_model(vec3 trans, GLfloat rad, vec3 axis, vec3 scal) {
 	model = glm::rotate(model, glm::radians(rad), axis);
 	model = glm::scale(model, scal);
 	return model;
+}
+
+void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
+	(*depthShader).use();
+	glViewport(0, 0, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
+	glEnable(GL_POLYGON_OFFSET_FILL);
+	glPolygonOffset(4.0f, 4.0f);
+	glCullFace(GL_FRONT);
+
+	for (int i = 0; i < NUM_CSM; ++i) {
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, shadowBuffers[i].fbo);
+		glClear(GL_DEPTH_BUFFER_BIT);
+
+		// obj
+		for (auto j = 0; j < Mod.size(); ++j) {
+			(*depthShader).setMat4("mvp", light_vp_matrices[i] * model_matrix[j]);
+			(*Mod[j]).Draw((*Mod_shader[j]));
+		}
+	}
+	glCullFace(GL_BACK);
+	glDisable(GL_POLYGON_OFFSET_FILL);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+}
+
+void CSM_uniform(mat4 model) {
+	// cascade shadow
+	for (int i = 0; i < NUM_CSM; ++i) {
+
+		// shadow_texes
+		ostringstream oss;
+		oss << "shadow_texes[" << i << "]";
+		glActiveTexture(GL_TEXTURE3 + i);
+		glBindTexture(GL_TEXTURE_2D, shadowBuffers[i].depthMap);
+		(*soldierShader).setInt(oss.str(), 3 + i);
+
+		// shadow matrices
+		ostringstream oss1;
+		oss1 << "shadow_matrices[" << i << "]";
+		(*soldierShader).setMat4(oss1.str(), shadow_sbpv_matrices[i] * model);
+
+		// range
+		ostringstream oss2;
+		oss2 << "uCascadedRange_C[" << i << "]";
+		(*soldierShader).setFloat(oss2.str(), csm_range_C[i]);
+	}
 }
 
 void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
@@ -208,14 +240,12 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 	glPolygonOffset(4.0f, 4.0f);
 	glCullFace(GL_FRONT);
 
+	// terrain
 	(*depthShader).setMat4("mvp", light_vp_matrix * terrain_model);
-	if (wireframe)
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-	else
-		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 	glBindVertexArray(terrainVAO);
 	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
-
+	
+	// obj
 	for (auto i = 0; i < Mod.size(); ++i) {
 		(*depthShader).setMat4("mvp", light_vp_matrix * model_matrix[i]);
 		(*Mod[i]).Draw((*Mod_shader[i]));
@@ -267,7 +297,6 @@ void My_Init()
 
 	(*rightScreenShader).use();
 	(*rightScreenShader).setInt("screenTexture", 0);
-	(*rightScreenShader).setInt("ssaoTexture", 1);
 
 	(*blurShader).use();
 	(*blurShader).setInt("screenTexture", 0);
@@ -363,10 +392,88 @@ void My_Init()
 
 	stbi_image_free(data);
 
+	// CSM 
+	shadow_sbpv_matrices.resize(NUM_CSM);
+	light_vp_matrices.resize(NUM_CSM);
+	mat4 view_matrix_inv = inverse(camera.GetViewMatrix());
+	float aspect_ratio = (float)SCR_WIDTH / (float)SCR_HEIGHT;//(float)SHADOW_MAP_WIDTH / (float)SHADOW_MAP_HEIGHT;
+	float tan_half_hfov = tanf(radians(camera.Zoom * 0.5f));
+	float tan_half_vfov = tanf(radians(camera.Zoom * aspect_ratio * 0.5f));
+
+	// split frustum into NUM_CSM + 1 levels (flip-z)
+	csm_range[0] = -0.1f; // near plane
+	csm_range[1] = -150.f;
+	csm_range[2] = -300.f;
+	csm_range[3] = -1000.0f; // far plane
+
+	//mat4 proj_matrix = perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.f);
+	// change to clip space
+	for (int i = 0; i < NUM_CSM; ++i) {
+		vec4 view(0.f, 0.f, csm_range[i + 1], 1.f);
+		//vec4 view(50.f, -45.f, csm_range[i + 1], 1.f);
+		vec4 clip = projection * view;
+		csm_range_C[i] = clip.z;
+	}
+	
+	for (int i = 0; i < NUM_CSM; ++i) {
+		float xn = csm_range[i] * tan_half_hfov;
+		float xf = csm_range[i + 1] * tan_half_hfov;
+		float yn = csm_range[i] * tan_half_vfov;
+		float yf = csm_range[i + 1] * tan_half_vfov;
+
+		// corners in view space
+		vec4 frustum_corners[8] = {
+			// near plane
+			vec4(xn, yn, csm_range[i], 1.f),
+			vec4(-xn, yn, csm_range[i], 1.f),
+			vec4(xn, -yn, csm_range[i], 1.f),
+			vec4(-xn, -yn, csm_range[i], 1.f),
+			// far plane
+			vec4(xf, yf, csm_range[i + 1], 1.f),
+			vec4(-xf, yf, csm_range[i + 1], 1.f),
+			vec4(xf, -yf, csm_range[i + 1], 1.f),
+			vec4(-xf, -yf, csm_range[i + 1], 1.f),
+		};
+
+		// change to light space
+		vec4 frustum_corners_L[8];
+
+		float min_x = std::numeric_limits<float>::max();
+		float max_x = std::numeric_limits<float>::min();
+		float min_y = std::numeric_limits<float>::max();
+		float max_y = std::numeric_limits<float>::min();
+		float min_z = std::numeric_limits<float>::max();
+		float max_z = std::numeric_limits<float>::min();
+
+		// find local bounding box
+		for (int j = 0; j < 8; ++j) {
+			vec4 view = view_matrix_inv * frustum_corners[j];
+			//printf("\n\tViewspace: (%f, %f, %f, %f) =>\n", view.x, view.y, view.z, view.w);
+			frustum_corners_L[j] = light_view_matrix * view;
+			//printf("\tLight space: (%f, %f, %f, %f)\n", frustum_corners_L[j].x, frustum_corners_L[j].y, frustum_corners_L[j].z, frustum_corners_L[j].w);
+
+			min_x = fminf(min_x, frustum_corners_L[j].x);
+			max_x = fmaxf(max_x, frustum_corners_L[j].x);
+			min_y = fminf(min_y, frustum_corners_L[j].y);
+			max_y = fmaxf(max_y, frustum_corners_L[j].y);
+			min_z = fminf(min_z, frustum_corners_L[j].z);
+			max_z = fmaxf(max_z, frustum_corners_L[j].z);
+		}
+
+		// set VP matrix for light (flip-z)
+		light_vp_matrices[i] = ortho(min_x, max_x, min_y, max_y, -max_z, -min_z) * light_view_matrix;
+		//printf("\n\tBounding Box: %f %f %f %f %f %f\n", min_x, max_x, min_y, max_y, -max_z, -min_z);
+		shadow_sbpv_matrices[i] = scale_bias_matrix * light_vp_matrices[i];
+	}
+
+	//// level 0 shadow matrix
+	//light_vp_matrix = light_vp_matrices[0];
+	//shadow_sbpv_matrix = shadow_sbpv_matrices[0];
+
 	// calculate model matrix
 	terrain_model = calculate_model(vec3(0.0f, -20.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(5.0f, 5.0f, 5.0f));
-	model_castle = calculate_model(vec3(0.0f, -1.75f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
-	model_splat = calculate_model(vec3(-13.0f, -1.5f, -5.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.3f, 0.1f, 0.3f));
+	model_castle = calculate_model(vec3(0.0f, -1.75f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f)); 
+	model_splat = calculate_model(vec3(-13.0f, -1.5f, -5.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.3f, 0.1f, 0.3f)); 
 	model_soldier = calculate_model(vec3(-23.0f, 6.75f, 0.0f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
 	// model_matrix vector
 	//model_matrixs.push_back(terrain_model);
@@ -382,74 +489,86 @@ void My_Init()
 	Shaders.push_back(splatShader);
 	Shaders.push_back(soldierShader);
 	//Shaders.push_back(terrainShader);
-
-	// Set up ssao
-	// -----------------------------------------
-	(*ssaoShader).use();
-	(*ssaoShader).setBlock("Kernels");
-
-	glGenVertexArrays(1, &ssao_vao);
-	glBindVertexArray(ssao_vao);
-
-	// Begin Initialize Kernal UBO
-	glGenBuffers(1, &kernal_ubo);
-	glBindBuffer(GL_UNIFORM_BUFFER, kernal_ubo);
-	vec4 kernals[32];
-	srand(time(NULL));
-	for (int i = 0; i < 32; ++i)
-	{
-		float scale = i / 32.0;
-		scale = 0.1f + 0.9f * scale * scale;
-		kernals[i] = vec4(normalize(vec3(
-			rand() / (float)RAND_MAX * 2.0f - 1.0f,
-			rand() / (float)RAND_MAX * 2.0f - 1.0f,
-			rand() / (float)RAND_MAX * 0.85f + 0.15f)) * scale,
-			0.0f
-		);
-	}
-	glBufferData(GL_UNIFORM_BUFFER, 32 * sizeof(vec4), &kernals[0][0], GL_STATIC_DRAW);
-
-	// Begin Initialize Random Noise Map
-	glGenTextures(1, &noise_map);
-	glBindTexture(GL_TEXTURE_2D, noise_map);
-	vec3 noiseData[16];
-	for (int i = 0; i < 16; ++i)
-	{
-		noiseData[i] = normalize(vec3(
-			rand() / (float)RAND_MAX, // 0.0 ~ 1.0
-			rand() / (float)RAND_MAX, // 0.0 ~ 1.0
-			0.0f
-		));
-	}
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 4, 4, 0, GL_RGB, GL_FLOAT, &noiseData[0][0]);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-	// Begin Initialize G Buffer
-	glGenFramebuffers(1, &gbuffer.fbo);
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer.fbo);
-
-	glGenTextures(2, &gbuffer.normal_map);
-	glBindTexture(GL_TEXTURE_2D, gbuffer.normal_map);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGBA, GL_FLOAT, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glBindTexture(GL_TEXTURE_2D, gbuffer.depth_map);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, SCR_WIDTH, SCR_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-
-	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuffer.normal_map, 0);
-	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gbuffer.depth_map, 0);
-
-	glGenFramebuffers(1, &ssao_fbo);
 }
 
-void Render_Loaded_Model(mat4 projection, mat4 view)
+void My_Display()
 {
+	// shadow test
+	glEnable(GL_DEPTH_TEST);
+	shadow(Models, Shaders, model_matrixs);
+	cascade_shadow(Models, Shaders, model_matrixs);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	// shadow test end
+
+	// update screen split position
+	glBindBuffer(GL_ARRAY_BUFFER, leftQuadVBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(leftQuadVertices), &leftQuadVertices, GL_STATIC_DRAW);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(leftQuadVertices), &leftQuadVertices);
+	glBindBuffer(GL_ARRAY_BUFFER, rightQuadVBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(rightQuadVertices), &rightQuadVertices, GL_STATIC_DRAW);
+	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(rightQuadVertices), &rightQuadVertices);
+
+	// view/projection transformations
+	projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
+	glm::mat4 view = camera.GetViewMatrix();
+
+	// render
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+	glEnable(GL_DEPTH_TEST);
+	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	// Draw skybox
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	(*skyboxShader).use();
+	glBindVertexArray(skyboxVAO);
+	(*skyboxShader).setInt("tex_cubemap", 0);
+
+	glm::mat4 pv_matrix = projection * view;
+	(*skyboxShader).setMat4("pv_matrix", pv_matrix);
+	(*skyboxShader).setVec3("cam_pos", camera.Position);
+
+	glDisable(GL_DEPTH_TEST);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glEnable(GL_DEPTH_TEST);
+
+	// Draw terrain
+	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
+	static const GLfloat one = 1.0f;
+	glClearBufferfv(GL_DEPTH, 0, &one);
+	(*terrainShader).use();
+	// Bind Textures using texture units
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
+	(*terrainShader).setInt("tex_displacement", 0);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, terrainTexture);
+	(*terrainShader).setInt("tex_color", 1);
+
+	glBindVertexArray(terrainVAO);
+
+	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
+	(*terrainShader).setMat4("proj_matrix", projection);
+	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
+	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
+	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
+	(*terrainShader).setInt("tex_color", 1);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+
+	if (wireframe)
+		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	else
+		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
+	glBindVertexArray(0);
+
 	// render the loaded castle model
-	// --------------------------------------
-	mat4 shadow_matrix = shadow_sbpv_matrix * model_castle;
+	// ------------------------------
+	shadow_matrix = shadow_sbpv_matrix * model_castle;
 
 	(*castleShader).use();
 	// use normal color
@@ -457,15 +576,14 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 		(*castleShader).setBool("using_normal_color", 1);
 	else
 		(*castleShader).setBool("using_normal_color", 0);
-	// test normal mapping
-	if (display_normal_mapping)
-		(*castleShader).setBool("display_normal_mapping", 1);
-	else
-		(*castleShader).setBool("display_normal_mapping", 0);
+	// shadow
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
 	(*castleShader).setInt("shadow_tex", 2);
 	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
+
+	// cascade shadow
+	CSM_uniform(model_castle);
 
 	(*castleShader).setMat4("projection", projection);
 	(*castleShader).setMat4("view", view);
@@ -504,10 +622,13 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 		(*soldierShader).setBool("using_normal_color", 1);
 	else
 		(*soldierShader).setBool("using_normal_color", 0);
+	// shadow
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
 	(*soldierShader).setInt("shadow_tex", 2);
 	(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
+	// cascade shadow
+	CSM_uniform(model_soldier);
 
 	(*soldierShader).setMat4("projection", projection);
 	(*soldierShader).setMat4("view", view);
@@ -516,137 +637,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 
 	(*soldierShader).setMat4("model", model_soldier);
 	(*soldierFiringModel).Draw((*soldierShader));
-}
-
-void My_Display()
-{
-	// shadow test
-	glEnable(GL_DEPTH_TEST);
-	shadow(Models, Shaders, model_matrixs);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-	// shadow test end
-
-	// update screen split position
-	glBindBuffer(GL_ARRAY_BUFFER, leftQuadVBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(leftQuadVertices), &leftQuadVertices, GL_STATIC_DRAW);
-	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(leftQuadVertices), &leftQuadVertices);
-	glBindBuffer(GL_ARRAY_BUFFER, rightQuadVBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(rightQuadVertices), &rightQuadVertices, GL_STATIC_DRAW);
-	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(rightQuadVertices), &rightQuadVertices);
-
-	// view/projection transformations
-	glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
-	glm::mat4 view = camera.GetViewMatrix();
-
-	// render
-	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-	glEnable(GL_DEPTH_TEST);
-	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-	// Draw skybox
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
-	(*skyboxShader).use();
-	glBindVertexArray(skyboxVAO);
-	(*skyboxShader).setInt("tex_cubemap", 0);
-
-	glm::mat4 pv_matrix = projection * view;
-	(*skyboxShader).setMat4("pv_matrix", pv_matrix);
-	(*skyboxShader).setVec3("cam_pos", camera.Position);
-
-	glDisable(GL_DEPTH_TEST);
-	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-	glEnable(GL_DEPTH_TEST);
-
-	// Draw terrain
-	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
-	static const GLfloat one = 1.0f;
-	glClearBufferfv(GL_DEPTH, 0, &one);
-	(*terrainShader).use();
-	// Bind Textures using texture units
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
-	(*terrainShader).setInt("tex_displacement", 0);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, terrainTexture);
-	(*terrainShader).setInt("tex_color", 1);
-
-	// shadow uniform
-	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*terrainShader).setInt("shadow_tex", 2);
-	(*terrainShader).setMat4("shadow_matrix", shadow_matrix);
-
-	glBindVertexArray(terrainVAO);
-
-	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
-	(*terrainShader).setMat4("proj_matrix", projection);
-	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
-	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
-	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
-	(*terrainShader).setInt("tex_color", 1);
-
-	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LEQUAL);
-
-	if (wireframe)
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-	else
-		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
-	glBindVertexArray(0);
-
-	// render the loaded models
-	// ------------------------------
-	Render_Loaded_Model(projection, view);
-
-	// draw ssao
-	// --------------------------------
-	// Begin Depth - Normal Pass
-	static const GLfloat white[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-	static const GLfloat black[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-	static const GLfloat ones[] = { 1.0f };
-
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer.fbo);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
-	glClearBufferfv(GL_COLOR, 0, black);
-	glClearBufferfv(GL_DEPTH, 0, ones);
-
-	// render the loaded models
-	// ------------------------------
-	using_normal_color = true;
-	Render_Loaded_Model(projection, view);
-	using_normal_color = false;
-
-	// Begin SSAO Pass
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao_fbo);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
-	glClearBufferfv(GL_COLOR, 0, white);
-	(*ssaoShader).use();
-
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, gbuffer.normal_map);
-	(*ssaoShader).setInt("normal_map", 0);
-
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, gbuffer.depth_map);
-	(*ssaoShader).setInt("depth_map", 1);
-	(*ssaoShader).setMat4("proj", projection);
-
-	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_2D, noise_map);
-	(*ssaoShader).setInt("noise_map", 2);
-
-	(*ssaoShader).set2Float("noise_scale", SCR_WIDTH / 4.0f, SCR_HEIGHT / 4.0f);
-	glBindBufferBase(GL_UNIFORM_BUFFER, 0, kernal_ubo);
-
-	glDisable(GL_DEPTH_TEST);
-	glBindVertexArray(ssao_vao);
-	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-	glEnable(GL_DEPTH_TEST);
-
+	
 	// bind back to default framebuffer
 	// --------------------------------
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -684,14 +675,12 @@ void My_Display()
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 
 	(*rightScreenShader).use();
-	glBindVertexArray(rightQuadVAO);
 	glActiveTexture(GL_TEXTURE0);
+	glBindVertexArray(rightQuadVAO);
 	glBindTexture(GL_TEXTURE_2D, textureColorbuffer);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, ssao_tex);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
 
-	glutSwapBuffers();
+    glutSwapBuffers();
 }
 
 void My_Reshape(int width, int height)
@@ -699,27 +688,20 @@ void My_Reshape(int width, int height)
 	glViewport(0, 0, width, height);
 	SCR_WIDTH = width;
 	SCR_HEIGHT = height;
-	magnifyCenter_x = SCR_WIDTH / 2;
+	magnifyCenter_x = SCR_WIDTH / 2; 
 	magnifyCenter_y = SCR_HEIGHT / 2;
-	prevX = SCR_WIDTH / 2.0f;
+	prevX = SCR_WIDTH / 2.0f; 
 	lastX = SCR_WIDTH / 2.0f;
 	lastY = SCR_HEIGHT / 2.0f;
 	prevY = SCR_HEIGHT / 2.0f;
 
-	glGenFramebuffers(1, &shadowBuffer.fbo);
-	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
-	glGenTextures(1, &shadowBuffer.depthMap);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
-
-	glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadowBuffer.depthMap, 0);
-	glDrawBuffer(GL_NONE);
-	glReadBuffer(GL_NONE);
-	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	// shadow
+	create_frame(shadowBuffer, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
+	// cascade shadow
+	shadowBuffers.resize(NUM_CSM);
+	for (auto& frame : shadowBuffers) {
+		create_frame(frame, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
+	}
 
 	// framebuffer configuration
 	// -------------------------
@@ -762,34 +744,6 @@ void My_Reshape(int width, int height)
 	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-	// create rbos and textures for ssao here!!! 
-	// ---------------------------
-	glDeleteRenderbuffers(1, &ssao_rbo);
-	glDeleteTextures(1, &ssao_tex);
-
-	glGenRenderbuffers(1, &ssao_rbo);
-	glBindRenderbuffer(GL_RENDERBUFFER, ssao_rbo);
-	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32, width, height);
-
-	// create ssao fbo texture
-	glGenTextures(1, &ssao_tex);
-	glBindTexture(GL_TEXTURE_2D, ssao_tex);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-	// bind to ssao fbo
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ssao_fbo);
-	glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ssao_rbo);
-	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ssao_tex, 0);
-
-	glBindTexture(GL_TEXTURE_2D, gbuffer.normal_map);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, NULL);
-	glBindTexture(GL_TEXTURE_2D, gbuffer.depth_map);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
 }
 
 void My_Timer(int val)
@@ -930,13 +884,6 @@ void My_Keyboard(unsigned char key, int x, int y)
 		case 'n':
 			using_normal_color = !using_normal_color;
 			break;
-		case 'o':
-			ssao = !ssao;
-			(*rightScreenShader).setBool("ssao", ssao);
-			break;
-		case 'p':
-			display_normal_mapping = !display_normal_mapping;
-			break;
 		default:
 			cout << "Nothing" << endl;
 			break;
@@ -946,7 +893,7 @@ void My_Keyboard(unsigned char key, int x, int y)
 
 void My_SpecialKeys(int key, int x, int y)
 {
-	switch (key)
+	switch(key)
 	{
 	case GLUT_KEY_F1:
 		printf("F1 is pressed at (%d, %d)\n", x, y);
@@ -965,10 +912,10 @@ void My_SpecialKeys(int key, int x, int y)
 
 void My_Menu(int id)
 {
-	switch (id)
+	switch(id)
 	{
 	case MENU_TIMER_START:
-		if (!timer_enabled)
+		if(!timer_enabled)
 		{
 			timer_enabled = true;
 			glutTimerFunc(timer_speed, My_Timer, 0);
@@ -1012,8 +959,8 @@ void My_Menu(int id)
 int main(int argc, char *argv[])
 {
 #ifdef __APPLE__
-	// Change working directory to source code path
-	chdir(__FILEPATH__("/../Assets/"));
+    // Change working directory to source code path
+    chdir(__FILEPATH__("/../Assets/"));
 #endif
 	// Initialize GLUT and GLEW, then create a window.
 	////////////////////
@@ -1021,11 +968,11 @@ int main(int argc, char *argv[])
 #ifdef _MSC_VER
 	glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #else
-	glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
+    glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #endif
 
-	//glutInitContextVersion(4, 2);
-	//glutInitContextProfile(GLUT_CORE_PROFILE);
+	glutInitContextVersion(4, 2);
+	glutInitContextProfile(GLUT_CORE_PROFILE);
 
 	glutInitWindowPosition(100, 100);
 	glutInitWindowSize(1280, 720);
@@ -1053,8 +1000,6 @@ int main(int argc, char *argv[])
 	terrainShader = &s_terrain;
 	Shader s_depth("depth.vs.glsl", "depth.fs.glsl");
 	depthShader = &s_depth;
-	Shader s_ssao("ssao.vs.glsl", "ssao.fs.glsl");
-	ssaoShader = &s_ssao;
 
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
@@ -1100,7 +1045,7 @@ int main(int argc, char *argv[])
 	glutPassiveMotionFunc(My_Mouse_Move);
 	glutKeyboardFunc(My_Keyboard);
 	glutSpecialFunc(My_SpecialKeys);
-	glutTimerFunc(timer_speed, My_Timer, 0);
+	glutTimerFunc(timer_speed, My_Timer, 0); 
 
 	// Enter main event loop.
 	glutMainLoop();
