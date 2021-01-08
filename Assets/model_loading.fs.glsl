@@ -12,6 +12,8 @@ in vec4 shadow_coord;
 in vec3 tangentLightPos;
 in vec3 tangentViewPos;
 in vec3 tangentFragPos;
+in vec4 CSM_coord[NUM_CSM];
+in float depth_current_position;
 
 uniform sampler2D texture_diffuse1;
 uniform sampler2DShadow shadow_tex;
@@ -29,6 +31,8 @@ uniform float specular_power = 200.0;
 // Position of light and eyes
 uniform vec3 light_pos;
 uniform vec3 eye_pos;
+// shadow factor
+float shadow_factor;
 
 void main()
 {    
