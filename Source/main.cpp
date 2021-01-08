@@ -65,6 +65,7 @@ bool enable_fog;
 mat4 model_castle;
 mat4 model_splat;
 mat4 model_soldier;
+mat4 model_smoke;
 mat4 terrain_model;
 vector<mat4> model_matrixs;
 
@@ -94,6 +95,40 @@ Shader *skyboxShader;
 Shader* terrainShader;
 Shader *depthShader;
 vector<Shader*> Shaders;
+
+//particle system declare
+#define MAX_PARTICLE_COUNT 1000
+
+struct DrawArraysIndirectCommand
+{
+	uint count;
+	uint primCount;
+	uint first;
+	uint baseInstance;
+};
+DrawArraysIndirectCommand defalutDrawArraysCommand = { 0, 1, 0, 0 };
+
+struct Particle
+{
+	vec3 position;
+	float _padding;
+	vec3 velocity;
+	float lifeTime;
+};
+
+struct ParticleBuffer
+{
+	GLuint shaderStorageBuffer;
+	GLuint indirectBuffer;
+};
+ParticleBuffer particleIn;
+ParticleBuffer particleOut;
+GLuint particleTexture;
+GLuint updateProgram;
+GLuint addProgram;
+GLuint renderProgram;
+GLuint particle_vao;
+//particle system declare end
 
 // load models
 // -----------
@@ -194,6 +229,17 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 }
 
+// Add count particles to input buffers.
+void AddParticle(uint count)
+{
+	glUseProgram(addProgram);
+	glUniform1ui(0, count);
+	glUniform2f(1, static_cast<float>(rand()), static_cast<float>(rand()));
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleIn.shaderStorageBuffer);
+	glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, particleIn.indirectBuffer);
+	glDispatchCompute(1, 1, 1);
+}
+
 void My_Init()
 {
 	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
@@ -223,6 +269,71 @@ void My_Init()
 
 	// build and compile shaders
 	// -------------------------
+
+	//***particle system init ***
+	// Create shader program for adding particles.
+	GLuint cs_add = glCreateShader(GL_COMPUTE_SHADER);
+	glShaderSource(cs_add, 1, loadShaderSource("add_cs.glsl"), NULL);
+	glCompileShader(cs_add);
+	addProgram = glCreateProgram();
+	glAttachShader(addProgram, cs_add);
+	glLinkProgram(addProgram);
+
+	// Create shader program for updating particles. (from input to output)
+	GLuint cs_update = glCreateShader(GL_COMPUTE_SHADER);
+	glShaderSource(cs_update, 1, loadShaderSource("update_cs.glsl"), NULL);
+	glCompileShader(cs_update);
+	updateProgram = glCreateProgram();
+	glAttachShader(updateProgram, cs_update);
+	glLinkProgram(updateProgram);
+
+	// Create shader program for rendering particles.
+	GLuint vs = glCreateShader(GL_VERTEX_SHADER);
+	glShaderSource(vs, 1, loadShaderSource("render_vs.glsl"), NULL);
+	glCompileShader(vs);
+	GLuint gs = glCreateShader(GL_GEOMETRY_SHADER);
+	glShaderSource(gs, 1, loadShaderSource("render_gs.glsl"), NULL);
+	glCompileShader(gs);
+	GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(fs, 1, loadShaderSource("render_fs.glsl"), NULL);
+	glCompileShader(fs);
+	renderProgram = glCreateProgram();
+	glAttachShader(renderProgram, vs);
+	glAttachShader(renderProgram, gs);
+	glAttachShader(renderProgram, fs);
+	glLinkProgram(renderProgram);
+
+	// Create shader storage buffers & indirect buffers
+	glGenBuffers(1, &particleIn.shaderStorageBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, particleIn.shaderStorageBuffer);
+	glBufferStorage(GL_SHADER_STORAGE_BUFFER, sizeof(Particle) * MAX_PARTICLE_COUNT, NULL, GL_DYNAMIC_STORAGE_BIT);
+
+	glGenBuffers(1, &particleIn.indirectBuffer);
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, particleIn.indirectBuffer);
+	glBufferStorage(GL_DRAW_INDIRECT_BUFFER, sizeof(DrawArraysIndirectCommand), &defalutDrawArraysCommand, GL_DYNAMIC_STORAGE_BIT);
+
+	glGenBuffers(1, &particleOut.shaderStorageBuffer);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, particleOut.shaderStorageBuffer);
+	glBufferStorage(GL_SHADER_STORAGE_BUFFER, sizeof(Particle) * MAX_PARTICLE_COUNT, NULL, GL_DYNAMIC_STORAGE_BIT);
+
+	glGenBuffers(1, &particleOut.indirectBuffer);
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, particleOut.indirectBuffer);
+	glBufferStorage(GL_DRAW_INDIRECT_BUFFER, sizeof(DrawArraysIndirectCommand), &defalutDrawArraysCommand, GL_DYNAMIC_STORAGE_BIT);
+
+	// Create particle texture
+	texture_data textureData = loadImg("smoke.jpg");
+	glGenTextures(1, &particleTexture);
+	glBindTexture(GL_TEXTURE_2D, particleTexture);
+	glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB8, textureData.width, textureData.height);
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, textureData.width, textureData.height, GL_RGBA, GL_UNSIGNED_BYTE, textureData.data);
+	glGenerateMipmap(GL_TEXTURE_2D);
+	delete[] textureData.data;
+
+	// Create VAO. We don't have any input attributes, but this is still required.
+	glGenVertexArrays(1, &particle_vao);
+	glBindVertexArray(particle_vao);
+	//***particle system init end***
+
 	// set shader uniform variable
 	(*leftScreenShader).use();
 	(*leftScreenShader).setInt("screenTexture", 0);
@@ -447,6 +558,40 @@ void My_Display()
 	(*castleShader).setMat4("model", model_castle);
 	(*castleModel).Draw((*castleShader));
 
+	// Update particles.
+	glUseProgram(updateProgram);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleIn.shaderStorageBuffer);
+	glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 0, particleIn.indirectBuffer);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, particleOut.shaderStorageBuffer);
+	glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 1, particleOut.indirectBuffer);
+	glUniform1f(0, 0.016f); // We use a fixed update step of 0.016 seconds.
+	glNamedBufferSubData(particleOut.indirectBuffer, 0, sizeof(DrawArraysIndirectCommand), &defalutDrawArraysCommand);
+	glDispatchCompute(1, 1, 1);
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+	//glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	glDepthMask(GL_FALSE); // Disable depth writing for additive blending. Remember to turn it on later...
+
+	// Draw particles using updated buffers using additive blending.
+	glBindVertexArray(particle_vao);
+	glUseProgram(renderProgram);
+	model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.1f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	glUniformMatrix4fv(0, 1, GL_FALSE, value_ptr(view* model_smoke));
+	glUniformMatrix4fv(1, 1, GL_FALSE, value_ptr(projection));
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, particleTexture);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_ONE, GL_ONE);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleOut.shaderStorageBuffer);
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, particleOut.indirectBuffer);
+	glDrawArraysIndirect(GL_POINTS, 0);
+
+	glDisable(GL_BLEND);
+	glDepthMask(GL_TRUE);
+	// Swap input and output buffer.
+	std::swap(particleIn, particleOut);
+
+
 	// render the loaded splat model
 	// --------------------------------------
 	(*splatShader).use();
@@ -488,7 +633,7 @@ void My_Display()
 
 	(*soldierShader).setMat4("model", model_soldier);
 	(*soldierFiringModel).Draw((*soldierShader));
-	
+
 	// bind back to default framebuffer
 	// --------------------------------
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -607,6 +752,7 @@ void My_Timer(int val)
 {
 	timer_cnt++;
 	timerCount++;
+	AddParticle(1);
 	glutPostRedisplay();
 	if (timer_enabled)
 		glutTimerFunc(timer_speed, My_Timer, val);
@@ -828,8 +974,8 @@ int main(int argc, char *argv[])
     glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #endif
 
-	/*glutInitContextVersion(4, 2);
-	glutInitContextProfile(GLUT_CORE_PROFILE);*/
+	//glutInitContextVersion(4, 2);
+	//glutInitContextProfile(GLUT_CORE_PROFILE);
 
 	glutInitWindowPosition(100, 100);
 	glutInitWindowSize(1280, 720);
