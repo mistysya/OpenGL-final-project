@@ -21,7 +21,7 @@ in vec4 CSM_coord[NUM_CSM];
 uniform sampler2D texture_diffuse1;
 uniform sampler2D texture_normal1; // NOTICE texture index
 uniform sampler2DShadow shadow_tex; // NOTICE shadow tex index
-uniform sampler2D uDepthTexture[NUM_CSM]; // NOTICE shadow tex index
+uniform sampler2DShadow uDepthTexture[NUM_CSM]; // NOTICE shadow tex index
 uniform bool using_normal_color;
 uniform bool display_normal_mapping;
 uniform bool enable_cascade_shadow;
@@ -35,7 +35,7 @@ uniform float uCascadedRange_C[NUM_CSM];
 // Position of light and eyes
 uniform vec3 light_pos;
 uniform vec3 eye_pos;
-
+/*
 float check_shadow(int cascaded_idx, vec4 curr_pos, vec3 N, vec3 L)
 {
 	vec3 proj_coord = curr_pos.xyz / curr_pos.w;
@@ -61,7 +61,7 @@ float check_shadow(int cascaded_idx, vec4 curr_pos, vec3 N, vec3 L)
 		return 1.0f;
 	}
 }
-
+*/
 void main()
 {    
 	// Normal Mapping
@@ -99,22 +99,18 @@ void main()
 	// choose level of detail for CSM in clip space
 	for (int i = 0; i < NUM_CSM; ++i) {
 		if (csmPos_C <= uCascadedRange_C[i]) {
-			cascade_shadow_factor = check_shadow(i, csmPos_L[i], N, L) * 0.6 + 0.4;
-			//cascade_shadow_factor = textureProj(uDepthTexture[i], CSM_coord[i]) * 0.6 + 0.4;
-			//cascade_shadow_factor = textureProj(uDepthTexture[i], csmPos_L[i]) * 0.6 + 0.4;
+			//cascade_shadow_factor = check_shadow(i, csmPos_L[i], N, L) * 0.8 + 0.2;
+			cascade_shadow_factor = textureProj(uDepthTexture[i], CSM_coord[i]) * 0.8 + 0.2;
 
 			// visualize frustum sections
 			if (i == 0) {
 				cascaded_indicator = vec4(0.f, 0.f, 0.f, 0.f);
 			}
 			else if (i == 1) {
-				if (cascade_shadow_factor > 0.6)
-					cascaded_indicator = vec4(0.f, 0.07f, 0.f, 0.f);
+				cascaded_indicator = vec4(0.f, 0.07f, 0.f, 0.f);
 			}
 			else if (i == 2) {
-				//if (cascade_shadow_factor > 0.6)
-				//	cascaded_indicator = vec4(0.07f, 0.f, 0.f, 0.f);
-				cascaded_indicator = vec4(0.f, 0.f, 0.f, 0.f);
+				cascaded_indicator = vec4(0.f, 0.f, 0.07f, 0.f);
 			}
 
 			break;

@@ -245,7 +245,7 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 
 void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
 	(*depthShader).use();
-	glViewport(0, 0, (float)SHADOW_MAP_WIDTH, (float)SHADOW_MAP_HEIGHT);
+	glViewport(0, 0, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
 	glEnable(GL_POLYGON_OFFSET_FILL);
 	glPolygonOffset(4.0f, 4.0f);
 	glCullFace(GL_FRONT);
@@ -285,8 +285,8 @@ void My_Init()
 	// CSM setting
 	// -----------
 	// CSM
-	light_matrices.resize(NUM_CSM);
 	shadow_sbpv_matrices.resize(NUM_CSM);
+	light_matrices.resize(NUM_CSM);
 	mat4 view_matrix_inv = inverse(view);
 	mat4 view_matrix_light = lookAt(light_position, vec3(0.f), vec3(0.f, 1.f, 0.f));
 	float aspect_ratio = (float)SCR_WIDTH / (float)SCR_HEIGHT;
@@ -296,8 +296,8 @@ void My_Init()
 	printf("aspect_ratio: %f\ntan_half_hfov: %f\ntan_half_vfov: %f\n", aspect_ratio, tan_half_hfov, tan_half_vfov);
 	// split frustum into NUM_CSM + 1 levels (flip-z) (in camera coordinate position is negative)
 	csm_range[0] = -camera.NearPlane;
-	csm_range[1] = -40.f * 2;
-	csm_range[2] = -80.f * 2;
+	csm_range[1] = -80.f;
+	csm_range[2] = -160.f;
 	csm_range[3] = -camera.FarPlane * 2;
 	// change to clip space (for projection matrix)
 	for (int i = 0; i < NUM_CSM; ++i) {
@@ -357,8 +357,8 @@ void My_Init()
 
 		// set VP matrix for light (flip-z)
 		light_matrices[i] = ortho(min_x, max_x, min_y, max_y, -max_z, -min_z) * light_view_matrix;
-		shadow_sbpv_matrices[i] = scale_bias_matrix * light_matrices[i];
 		printf("\n\tBounding Box: %f %f %f %f %f %f\n", min_x, max_x, min_y, max_y, -max_z, -min_z);
+		shadow_sbpv_matrices[i] = scale_bias_matrix * light_matrices[i];
 		// reference for how it work : https://blog.csdn.net/ZJU_fish1996/article/details/103689924
 	}
 	// -------------------------------------------------------------------------------------------
@@ -581,15 +581,15 @@ void My_Init()
 }
 
 void Set_Cascade_Uniform(Shader *shader, mat4 model) {
-	(*shader).use();
+	//(*shader).use();
 	// Set shadow texture index  NOTICE texture index
 	for (int i = 0; i < NUM_CSM; ++i) {
 		// depth texture
 		ostringstream oss;
 		oss << "uDepthTexture[" << i << "]";
-		(*shader).setInt(oss.str(), i + 3);
-		glActiveTexture(GL_TEXTURE0 + i + 3);
+		glActiveTexture(GL_TEXTURE3 + i);
 		glBindTexture(GL_TEXTURE_2D, depth_frames[i].depth_texture);
+		(*shader).setInt(oss.str(), i + 3);
 	}
 	// light matrix
 	for (int i = 0; i < NUM_CSM; ++i) {
@@ -680,40 +680,13 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*castleShader).setInt("shadow_tex", 2);
 	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
 
+	Set_Cascade_Uniform(castleShader, model_castle);
 	(*castleShader).setMat4("projection", projection);
 	(*castleShader).setMat4("view", view);
 	(*castleShader).setVec3("light_pos", light_position);
 	(*castleShader).setVec3("eye_pos", camera.Position);
 
 	(*castleShader).setMat4("model", model_castle);
-	Set_Cascade_Uniform(castleShader, model_castle);
-	/*
-	// Set shadow texture index  NOTICE texture index
-	for (int i = 0; i < NUM_CSM; ++i) {
-		// depth texture
-		ostringstream oss;
-		oss << "uDepthTexture[" << i << "]";
-		(*castleShader).setInt(oss.str(), i + 3);
-		glActiveTexture(GL_TEXTURE0 + i + 3);
-		glBindTexture(GL_TEXTURE_2D, depth_frames[i].depth_texture);
-	}
-	// light matrix
-	(*castleShader).setMat4("csm_L[0]", light_matrices[0], NUM_CSM);
-
-	// shadow matrices
-	for (int i = 0; i < NUM_CSM; ++i) {
-		ostringstream oss;
-		oss << "shadow_matrices[" << i << "]";
-		(*castleShader).setMat4(oss.str(), shadow_sbpv_matrices[i] * model_castle);
-	}
-
-	// range
-	for (int i = 0; i < NUM_CSM; ++i) {
-		ostringstream oss;
-		oss << "uCascadedRange_C[" << i << "]";
-		(*castleShader).setFloat(oss.str(), csm_range_C[i]);
-	}
-	*/
 	(*castleModel).Draw((*castleShader));
 
 	// render the loaded splat model
@@ -934,7 +907,7 @@ void My_Reshape(int width, int height)
 	glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadowBuffer.depthMap, 0);
 	glDrawBuffer(GL_NONE);
 	glReadBuffer(GL_NONE);
-	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 	// framebuffer configuration
 	// -------------------------
