@@ -47,13 +47,14 @@ float check_shadow(int cascaded_idx, vec4 curr_pos, vec3 N, vec3 L)
 	// from camera view
 	float curr_depth = proj_coord.z;
 	// from light view
-	float occ_depth = texture(uDepthTexture[cascaded_idx], proj_coord.xy).r;
+	float occ_depth = texture(uDepthTexture[cascaded_idx], proj_coord.xy).x;
 
 	// adaptive bias
 	float bias = 0.005f * tan(acos(dot(N, L)));
 	bias = clamp(bias, 0.f, 0.01f);
 
-	if (occ_depth < curr_depth - bias) {
+	//if (occ_depth < curr_depth - bias) {
+	if (occ_depth < curr_depth + 0.00001) {
 		return 0.5f;
 	}
 	else {
@@ -92,24 +93,28 @@ void main()
     float shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.6 + 0.4;
 
 	// Cascade shadow
-	float cascade_shadow_factor;
+	float cascade_shadow_factor = 0;
 	vec4 cascaded_indicator = vec4(0.f);
 
 	// choose level of detail for CSM in clip space
 	for (int i = 0; i < NUM_CSM; ++i) {
 		if (csmPos_C <= uCascadedRange_C[i]) {
-			cascade_shadow_factor = check_shadow(i, csmPos_L[i], N, L);
-			//cascade_shadow_factor = textureProj(uDepthTexture[i], CSM_coord[i]).r * 0.8 + 0.2;
+			cascade_shadow_factor = check_shadow(i, csmPos_L[i], N, L) * 0.6 + 0.4;
+			//cascade_shadow_factor = textureProj(uDepthTexture[i], CSM_coord[i]) * 0.6 + 0.4;
+			//cascade_shadow_factor = textureProj(uDepthTexture[i], csmPos_L[i]) * 0.6 + 0.4;
 
 			// visualize frustum sections
 			if (i == 0) {
-				cascaded_indicator = vec4(0.07f, 0.f, 0.f, 0.f);
+				cascaded_indicator = vec4(0.f, 0.f, 0.f, 0.f);
 			}
 			else if (i == 1) {
-				cascaded_indicator = vec4(0.f, 0.07f, 0.f, 0.f);
+				if (cascade_shadow_factor > 0.6)
+					cascaded_indicator = vec4(0.f, 0.07f, 0.f, 0.f);
 			}
 			else if (i == 2) {
-				cascaded_indicator = vec4(0.f, 0.f, 0.07f, 0.f);
+				//if (cascade_shadow_factor > 0.6)
+				//	cascaded_indicator = vec4(0.07f, 0.f, 0.f, 0.f);
+				cascaded_indicator = vec4(0.f, 0.f, 0.f, 0.f);
 			}
 
 			break;
@@ -124,10 +129,10 @@ void main()
         //FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
         //FragColor = vec4(shadow_factor, shadow_factor, shadow_factor, 1.0);
         FragColor = texture(texture_diffuse1, TexCoords) * vec4(shadow_factor * (ambient + diffuse + specular), 1.0);
-		/*
+
 		if (enable_cascade_shadow)
-			if (shadow_factor < 0.6)
-				FragColor = FragColor + cascaded_indicator;
+			FragColor = FragColor + cascaded_indicator;
+		/*
 			else
 				FragColor = FragColor;
 				*/

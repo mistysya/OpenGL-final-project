@@ -18,8 +18,10 @@
 #define MENU_MAGNIFIER 10
 #define MENU_NORMAL 11
 
-#define SHADOW_MAP_WIDTH 7680
-#define SHADOW_MAP_HEIGHT 4320
+//#define SHADOW_MAP_WIDTH 7680
+//#define SHADOW_MAP_HEIGHT 4320
+#define SHADOW_MAP_WIDTH 4096
+#define SHADOW_MAP_HEIGHT 4096
 #define NUM_CSM 3
 
 using namespace glm;
@@ -92,7 +94,8 @@ vector<mat4> model_matrixs;
 
 // light position
 //vec3 light_position = vec3(-50, 45, 76);// vec3(55, 51, 65);
-vec3 light_position = vec3(50, 50, 0);// vec3(55, 51, 65);
+//vec3 light_position = vec3(50, 50, 0);// vec3(55, 51, 65);
+vec3 light_position = vec3(0, 45, 76);// vec3(55, 51, 65);
 
 //depth
 mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) *scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
@@ -242,16 +245,17 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 
 void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
 	(*depthShader).use();
-	glViewport(0, 0, (float)SCR_WIDTH, (float)SCR_HEIGHT);
+	glViewport(0, 0, (float)SHADOW_MAP_WIDTH, (float)SHADOW_MAP_HEIGHT);
+	glEnable(GL_POLYGON_OFFSET_FILL);
+	glPolygonOffset(4.0f, 4.0f);
+	glCullFace(GL_FRONT);
 
 	for (int i = 0; i < NUM_CSM; ++i) {
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depth_frames[i].fbo);
 		glClear(GL_DEPTH_BUFFER_BIT);
 
 		// terrain render
-		glEnable(GL_POLYGON_OFFSET_FILL);
-		glPolygonOffset(4.0f, 4.0f);
-		glCullFace(GL_FRONT);
+		/*
 		(*depthShader).setMat4("mvp", light_matrices[i] * terrain_model);
 		if (wireframe)
 			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -259,16 +263,18 @@ void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4>
 			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 		glBindVertexArray(terrainVAO);
 		glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
+		*/
 
 		// other model render
-		for (auto i = 0; i < Mod.size(); ++i) {
-			(*depthShader).setMat4("mvp", light_matrices[i] * model_matrix[i]); // NOTICE uMVP
-			(*Mod[i]).Draw((*Mod_shader[i]));
+		for (auto j = 0; j < Mod.size(); ++j) {
+			(*depthShader).setMat4("mvp", light_matrices[i] * model_matrix[j]); // NOTICE uMVP
+			(*Mod[j]).Draw((*Mod_shader[j]));
 		}
 
 		glCullFace(GL_BACK);
 		glDisable(GL_POLYGON_OFFSET_FILL);
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+		glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 	}
 }
 
@@ -278,25 +284,21 @@ void My_Init()
 	view = camera.GetViewMatrix();
 	// CSM setting
 	// -----------
-	// CSM shadow
-	depth_frames.resize(NUM_CSM);
-	for (auto& frame : depth_frames) {
-		create_frame(frame, (float)SCR_WIDTH, (float)SCR_HEIGHT);
-	}
 	// CSM
 	light_matrices.resize(NUM_CSM);
 	shadow_sbpv_matrices.resize(NUM_CSM);
 	mat4 view_matrix_inv = inverse(view);
 	mat4 view_matrix_light = lookAt(light_position, vec3(0.f), vec3(0.f, 1.f, 0.f));
 	float aspect_ratio = (float)SCR_WIDTH / (float)SCR_HEIGHT;
+	//aspect_ratio = (float)SHADOW_MAP_WIDTH / (float)SHADOW_MAP_HEIGHT;
 	float tan_half_hfov = tanf(radians(camera.Zoom * 0.5f));
 	float tan_half_vfov = tanf(radians(camera.Zoom * aspect_ratio * 0.5f));
 	printf("aspect_ratio: %f\ntan_half_hfov: %f\ntan_half_vfov: %f\n", aspect_ratio, tan_half_hfov, tan_half_vfov);
 	// split frustum into NUM_CSM + 1 levels (flip-z) (in camera coordinate position is negative)
 	csm_range[0] = -camera.NearPlane;
-	csm_range[1] = -30.f;
-	csm_range[2] = -90.f;
-	csm_range[3] = -camera.FarPlane;
+	csm_range[1] = -40.f * 2;
+	csm_range[2] = -80.f * 2;
+	csm_range[3] = -camera.FarPlane * 2;
 	// change to clip space (for projection matrix)
 	for (int i = 0; i < NUM_CSM; ++i) {
 		vec4 view_direction(0.f, 0.f, csm_range[i + 1], 1.f);
@@ -342,7 +344,7 @@ void My_Init()
 		for (int j = 0; j < 8; ++j) {
 			vec4 view = view_matrix_inv * frustum_corners[j];
 			printf("\n\tViewspace: (%f, %f, %f, %f) =>\n", view.x, view.y, view.z, view.w);
-			frustum_corners_L[j] = view_matrix_light * view;
+			frustum_corners_L[j] = light_view_matrix * view;
 			printf("\tLight space: (%f, %f, %f, %f)\n", frustum_corners_L[j].x, frustum_corners_L[j].y, frustum_corners_L[j].z, frustum_corners_L[j].w);
 
 			min_x = fminf(min_x, frustum_corners_L[j].x);
@@ -354,7 +356,7 @@ void My_Init()
 		}
 
 		// set VP matrix for light (flip-z)
-		light_matrices[i] = ortho(min_x, max_x, min_y, max_y, -max_z, -min_z) * view_matrix_light;
+		light_matrices[i] = ortho(min_x, max_x, min_y, max_y, -max_z, -min_z) * light_view_matrix;
 		shadow_sbpv_matrices[i] = scale_bias_matrix * light_matrices[i];
 		printf("\n\tBounding Box: %f %f %f %f %f %f\n", min_x, max_x, min_y, max_y, -max_z, -min_z);
 		// reference for how it work : https://blog.csdn.net/ZJU_fish1996/article/details/103689924
@@ -578,20 +580,32 @@ void My_Init()
 	glGenFramebuffers(1, &ssao_fbo);
 }
 
-void Set_Cascade_Uniform(Shader *shader) {
+void Set_Cascade_Uniform(Shader *shader, mat4 model) {
 	(*shader).use();
 	// Set shadow texture index  NOTICE texture index
 	for (int i = 0; i < NUM_CSM; ++i) {
 		// depth texture
 		ostringstream oss;
-		oss << "uDepthTexture[" << i + 3 << "]";
+		oss << "uDepthTexture[" << i << "]";
 		(*shader).setInt(oss.str(), i + 3);
 		glActiveTexture(GL_TEXTURE0 + i + 3);
 		glBindTexture(GL_TEXTURE_2D, depth_frames[i].depth_texture);
 	}
 	// light matrix
-	(*shader).setMat4("csm_L[0]", light_matrices[0], NUM_CSM);
+	for (int i = 0; i < NUM_CSM; ++i) {
+		ostringstream oss;
+		oss << "csm_L[" << i << "]";
+		(*shader).setMat4(oss.str(), light_matrices[i], NUM_CSM);
+	}
 
+	// shadow matrices
+	for (int i = 0; i < NUM_CSM; ++i) {
+		ostringstream oss;
+		oss << "shadow_matrices[" << i << "]";
+		(*shader).setMat4(oss.str(), shadow_sbpv_matrices[i] * model);
+	}
+
+	// range
 	for (int i = 0; i < NUM_CSM; ++i) {
 		ostringstream oss;
 		oss << "uCascadedRange_C[" << i << "]";
@@ -672,8 +686,8 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*castleShader).setVec3("eye_pos", camera.Position);
 
 	(*castleShader).setMat4("model", model_castle);
-	//Set_Cascade_Uniform(castleShader);
-
+	Set_Cascade_Uniform(castleShader, model_castle);
+	/*
 	// Set shadow texture index  NOTICE texture index
 	for (int i = 0; i < NUM_CSM; ++i) {
 		// depth texture
@@ -699,6 +713,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 		oss << "uCascadedRange_C[" << i << "]";
 		(*castleShader).setFloat(oss.str(), csm_range_C[i]);
 	}
+	*/
 	(*castleModel).Draw((*castleShader));
 
 	// render the loaded splat model
@@ -900,6 +915,12 @@ void My_Reshape(int width, int height)
 	projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, camera.NearPlane, camera.FarPlane);
 	view = camera.GetViewMatrix();
 
+	// CSM shadow
+	depth_frames.resize(NUM_CSM);
+	for (auto& frame : depth_frames) {
+		create_frame(frame, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
+	}
+	// shadow
 	glGenFramebuffers(1, &shadowBuffer.fbo);
 	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
 	glGenTextures(1, &shadowBuffer.depthMap);
@@ -1221,8 +1242,8 @@ int main(int argc, char *argv[])
 	glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #endif
 
-	//glutInitContextVersion(4, 2);
-	//glutInitContextProfile(GLUT_CORE_PROFILE);
+	glutInitContextVersion(4, 2);
+	glutInitContextProfile(GLUT_CORE_PROFILE);
 
 	glutInitWindowPosition(100, 100);
 	glutInitWindowSize(1280, 720);

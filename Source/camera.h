@@ -19,7 +19,7 @@ const float SPEED = 8.0f;
 const float SENSITIVITY = 0.1f;
 const float ZOOM = 45.0f; // fov
 const float NEAR_PLANE = 0.1f; // fov
-const float FAR_PLANE = 256.0; // fov
+const float FAR_PLANE = 512.0; // fov
 
 
 class Camera
