@@ -93,6 +93,11 @@ struct WaterColumn
 	float flow;
 };
 
+// object reflection
+GLuint my_cubeTexture;
+GLuint my_depthTexture;
+GLuint my_cubeFBO;
+
 // model_matrix
 mat4 model_castle;
 mat4 model_splat;
@@ -158,7 +163,8 @@ struct ParticleBuffer
 };
 ParticleBuffer particleIn;
 ParticleBuffer particleOut;
-GLuint particleTexture;
+GLuint particleTexture_smoke;
+GLuint particleTexture_spark;
 GLuint updateProgram;
 GLuint addProgram;
 GLuint renderProgram;
@@ -182,6 +188,12 @@ const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps\\posx.jpg",
 								 "..\\Assets\\cubemaps\\negy.jpg",
 								 "..\\Assets\\cubemaps\\posz.jpg",
 								 "..\\Assets\\cubemaps\\negz.jpg" };
+const char *rain_skyboxTexPath[6] = { "..\\Assets\\cubemaps\\rain\\posx.jpg",
+									  "..\\Assets\\cubemaps\\rain\\negx.jpg",
+									  "..\\Assets\\cubemaps\\rain\\posy.jpg",
+									  "..\\Assets\\cubemaps\\rain\\negy.jpg",
+									  "..\\Assets\\cubemaps\\rain\\posz.jpg",
+									  "..\\Assets\\cubemaps\\rain\\negz.jpg" };
 
 // framebuffer vertice
 float leftQuadVertices[] = {
@@ -209,6 +221,7 @@ unsigned int rightQuadVAO, rightQuadVBO;
 unsigned int skyboxVAO;
 unsigned int noiseTexture;
 unsigned int skyboxTexture;
+unsigned int rain_skyboxTexture;
 unsigned int blurFramebuffer; // for first blur pass
 unsigned int blurColorbuffer;
 unsigned int framebuffer;
@@ -238,6 +251,59 @@ void freeShaderSource(char** srcp)
 {
 	delete[] srcp[0];
 	delete[] srcp;
+}
+
+void CreateFBOCubeMap(int w, int h, unsigned int my_depthTexture, unsigned int my_cubeTexture)
+{
+	//1-generate the depth buffer for the cube map
+	glGenTextures(1, &my_depthTexture);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, my_depthTexture);
+
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+	// loop throw the 6 faces of the cube
+	for (uint i = 0; i < 6; i++)
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_DEPTH_COMPONENT16, w, h, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+
+
+	// 2-generate the color buffer for the cube map simple as we did in cubemapTexture function
+	glGenTextures(1, &my_cubeTexture);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, my_cubeTexture);
+
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+	// loop throw the 6 faces of the cube again
+	for (uint i = 0; i < 6; i++)
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+
+
+	//3- generate the FBO
+	glGenFramebuffers(1, &my_cubeFBO);
+	glBindFramebuffer(GL_FRAMEBUFFER, my_cubeFBO);
+
+	//4-attach CubeMap to FBO
+	glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, my_cubeTexture, 0);
+	glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, my_depthTexture, 0);
+
+	//5- specifiy which buffer will draw
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+	//6- check if every thing is ok
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+		std::cerr << " WARNING : FBO failed " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << std::endl;
+
+
+	//7- unbind after done creating
+	//glBindTexture(GL_TEXTURE_CUBE_MAP,0);
+	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 mat4 calculate_model(vec3 trans, GLfloat rad, vec3 axis, vec3 scal) {
@@ -379,10 +445,18 @@ void My_Init()
 	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, particleOut.indirectBuffer);
 	glBufferStorage(GL_DRAW_INDIRECT_BUFFER, sizeof(DrawArraysIndirectCommand), &defalutDrawArraysCommand, GL_DYNAMIC_STORAGE_BIT);
 
-	// Create particle texture
+	// Create particle textures
 	texture_data textureData = loadImg("smoke.jpg");
-	glGenTextures(1, &particleTexture);
-	glBindTexture(GL_TEXTURE_2D, particleTexture);
+	glGenTextures(1, &particleTexture_smoke);
+	glBindTexture(GL_TEXTURE_2D, particleTexture_smoke);
+	glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB8, textureData.width, textureData.height);
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, textureData.width, textureData.height, GL_RGBA, GL_UNSIGNED_BYTE, textureData.data);
+	glGenerateMipmap(GL_TEXTURE_2D);
+	delete[] textureData.data;
+
+	textureData = loadImg("spark.jpg");
+	glGenTextures(1, &particleTexture_spark);
+	glBindTexture(GL_TEXTURE_2D, particleTexture_spark);
 	glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB8, textureData.width, textureData.height);
 	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, textureData.width, textureData.height, GL_RGBA, GL_UNSIGNED_BYTE, textureData.data);
 	glGenerateMipmap(GL_TEXTURE_2D);
@@ -417,6 +491,20 @@ void My_Init()
 	for (int i = 0; i < 6; ++i)
 	{
 		texture_data image = loadImg(skyboxTexPath[i]);
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+			0, GL_RGBA,
+			image.width, image.height,
+			0, GL_RGBA, GL_UNSIGNED_BYTE,
+			image.data);
+	}
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	glGenTextures(1, &rain_skyboxTexture);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	for (int i = 0; i < 6; ++i)
+	{
+		texture_data image = loadImg(rain_skyboxTexPath[i]);
 		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
 			0, GL_RGBA,
 			image.width, image.height,
@@ -726,11 +814,14 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	// Draw particles using updated buffers using additive blending.
 	glBindVertexArray(particle_vao);
 	glUseProgram(renderProgram);
-	model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.1f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.08f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
 	glUniformMatrix4fv(0, 1, GL_FALSE, value_ptr(view * model_smoke));
 	glUniformMatrix4fv(1, 1, GL_FALSE, value_ptr(projection));
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, particleTexture);
+	if(rain)
+		glBindTexture(GL_TEXTURE_2D, particleTexture_smoke);
+	else
+		glBindTexture(GL_TEXTURE_2D, particleTexture_spark);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_ONE, GL_ONE);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleOut.shaderStorageBuffer);
@@ -760,7 +851,10 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*waterShader).setVec3("light_pos", light_position);
 	(*waterShader).setVec3("eye_pos", camera.Position);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferOut);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	if(rain)
+		glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	else
+		glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*waterShader).setInt("tex_cubemap", 0);
 	glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, 179 * 179);
 
@@ -777,7 +871,10 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*splatShader).setMat4("view", view);
 	(*splatShader).setVec3("light_pos", light_position);
 	(*splatShader).setVec3("eye_pos", camera.Position);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	if (rain)
+		glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	else
+		glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*splatShader).setInt("tex_cubemap", 0);
 
 	(*splatShader).setMat4("model", model_splat);
@@ -835,7 +932,10 @@ void My_Display()
 
 	// Draw skybox
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	if (rain)
+		glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	else
+		glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*skyboxShader).use();
 	glBindVertexArray(skyboxVAO);
 	(*skyboxShader).setInt("tex_cubemap", 0);
@@ -1094,7 +1194,11 @@ void My_Timer(int val)
 			AddDrop();
 		timeElapsed = 0;
 	}
-	AddParticle(1);
+	if (timerCount > 100)
+	{
+		AddParticle(50);
+		timerCount = 0;
+	}
 	glutPostRedisplay();
 	if (timer_enabled)
 		glutTimerFunc(timer_speed, My_Timer, val);
