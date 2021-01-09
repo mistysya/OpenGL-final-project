@@ -1,6 +1,7 @@
 #include "../Externals/Include/Common.h"
 #include "model.h"
 #include "camera.h"
+#include "csm_helper.h"
 //#include "shader_m.h"
 #include "mesh.h"
 #include "time.h"
@@ -19,6 +20,7 @@
 
 #define SHADOW_MAP_WIDTH 7680
 #define SHADOW_MAP_HEIGHT 4320
+#define NUM_CSM 3
 
 using namespace glm;
 using namespace std;
@@ -41,6 +43,7 @@ Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
 float lastX = SCR_WIDTH / 2.0f;
 float lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
+mat4 projection, view;
 
 // screen split
 float slide_bar_x = 0.7;
@@ -55,6 +58,7 @@ bool lbuttonPress = false;
 int effectID = 1;
 bool using_normal_color = false;
 bool display_normal_mapping = false;
+bool enable_cascade_shadow = true;
 float magnifyCenter_x = SCR_WIDTH / 2;
 float magnifyCenter_y = SCR_HEIGHT / 2;
 
@@ -87,7 +91,8 @@ mat4 terrain_model;
 vector<mat4> model_matrixs;
 
 // light position
-vec3 light_position = vec3(-50, 45, 76);// vec3(55, 51, 65);
+//vec3 light_position = vec3(-50, 45, 76);// vec3(55, 51, 65);
+vec3 light_position = vec3(50, 50, 0);// vec3(55, 51, 65);
 
 //depth
 mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) *scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
@@ -100,6 +105,13 @@ struct {
 	GLuint fbo;
 	GLuint depthMap;
 } shadowBuffer;
+
+// cascade shadow
+vector<mat4> light_matrices;
+vector<mat4> shadow_sbpv_matrices;
+vector<frame_t> depth_frames;
+float csm_range[NUM_CSM + 1];
+float csm_range_C[NUM_CSM];
 
 // shader
 Shader *castleShader;
@@ -208,6 +220,7 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 	glPolygonOffset(4.0f, 4.0f);
 	glCullFace(GL_FRONT);
 
+	// terrain render
 	(*depthShader).setMat4("mvp", light_vp_matrix * terrain_model);
 	if (wireframe)
 		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -216,6 +229,7 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 	glBindVertexArray(terrainVAO);
 	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
 
+	// other model render
 	for (auto i = 0; i < Mod.size(); ++i) {
 		(*depthShader).setMat4("mvp", light_vp_matrix * model_matrix[i]);
 		(*Mod[i]).Draw((*Mod_shader[i]));
@@ -226,8 +240,127 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 }
 
+void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
+	(*depthShader).use();
+	glViewport(0, 0, (float)SCR_WIDTH, (float)SCR_HEIGHT);
+
+	for (int i = 0; i < NUM_CSM; ++i) {
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depth_frames[i].fbo);
+		glClear(GL_DEPTH_BUFFER_BIT);
+
+		// terrain render
+		glEnable(GL_POLYGON_OFFSET_FILL);
+		glPolygonOffset(4.0f, 4.0f);
+		glCullFace(GL_FRONT);
+		(*depthShader).setMat4("mvp", light_matrices[i] * terrain_model);
+		if (wireframe)
+			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+		else
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+		glBindVertexArray(terrainVAO);
+		glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
+
+		// other model render
+		for (auto i = 0; i < Mod.size(); ++i) {
+			(*depthShader).setMat4("mvp", light_matrices[i] * model_matrix[i]); // NOTICE uMVP
+			(*Mod[i]).Draw((*Mod_shader[i]));
+		}
+
+		glCullFace(GL_BACK);
+		glDisable(GL_POLYGON_OFFSET_FILL);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	}
+}
+
 void My_Init()
 {
+	projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, camera.NearPlane, camera.FarPlane);
+	view = camera.GetViewMatrix();
+	// CSM setting
+	// -----------
+	// CSM shadow
+	depth_frames.resize(NUM_CSM);
+	for (auto& frame : depth_frames) {
+		create_frame(frame, (float)SCR_WIDTH, (float)SCR_HEIGHT);
+	}
+	// CSM
+	light_matrices.resize(NUM_CSM);
+	shadow_sbpv_matrices.resize(NUM_CSM);
+	mat4 view_matrix_inv = inverse(view);
+	mat4 view_matrix_light = lookAt(light_position, vec3(0.f), vec3(0.f, 1.f, 0.f));
+	float aspect_ratio = (float)SCR_WIDTH / (float)SCR_HEIGHT;
+	float tan_half_hfov = tanf(radians(camera.Zoom * 0.5f));
+	float tan_half_vfov = tanf(radians(camera.Zoom * aspect_ratio * 0.5f));
+	printf("aspect_ratio: %f\ntan_half_hfov: %f\ntan_half_vfov: %f\n", aspect_ratio, tan_half_hfov, tan_half_vfov);
+	// split frustum into NUM_CSM + 1 levels (flip-z) (in camera coordinate position is negative)
+	csm_range[0] = -camera.NearPlane;
+	csm_range[1] = -30.f;
+	csm_range[2] = -90.f;
+	csm_range[3] = -camera.FarPlane;
+	// change to clip space (for projection matrix)
+	for (int i = 0; i < NUM_CSM; ++i) {
+		vec4 view_direction(0.f, 0.f, csm_range[i + 1], 1.f);
+		vec4 clip = projection * view_direction;
+		csm_range_C[i] = clip.z;
+	}
+	// calculate AABB bounding box
+	for (int i = 0; i < NUM_CSM; ++i) {
+		// xy position of camera view cone in world coordinate
+		float xn = csm_range[i] * tan_half_hfov;
+		float xf = csm_range[i + 1] * tan_half_hfov;
+		float yn = csm_range[i] * tan_half_vfov;
+		float yf = csm_range[i + 1] * tan_half_vfov;
+
+		printf("\nCSM #%d\n", i);
+		printf("\tnear_x: %f far_x: %f\n", xn, xf);
+		printf("\tnear_y: %f far_y: %f\n", yn, yf);
+		// camera view cone corners in view space in world coordinate
+		vec4 frustum_corners[8] = {
+			// near plane
+			vec4(xn, yn, csm_range[i], 1.f),
+			vec4(-xn, yn, csm_range[i], 1.f),
+			vec4(xn, -yn, csm_range[i], 1.f),
+			vec4(-xn, -yn, csm_range[i], 1.f),
+			// far plane
+			vec4(xf, yf, csm_range[i + 1], 1.f),
+			vec4(-xf, yf, csm_range[i + 1], 1.f),
+			vec4(xf, -yf, csm_range[i + 1], 1.f),
+			vec4(-xf, -yf, csm_range[i + 1], 1.f),
+		};
+
+		// change to light space ( I have no idea how it works???)
+		vec4 frustum_corners_L[8];
+
+		float min_x = std::numeric_limits<float>::max();
+		float max_x = std::numeric_limits<float>::min();
+		float min_y = std::numeric_limits<float>::max();
+		float max_y = std::numeric_limits<float>::min();
+		float min_z = std::numeric_limits<float>::max();
+		float max_z = std::numeric_limits<float>::min();
+
+		// find local bounding box
+		for (int j = 0; j < 8; ++j) {
+			vec4 view = view_matrix_inv * frustum_corners[j];
+			printf("\n\tViewspace: (%f, %f, %f, %f) =>\n", view.x, view.y, view.z, view.w);
+			frustum_corners_L[j] = view_matrix_light * view;
+			printf("\tLight space: (%f, %f, %f, %f)\n", frustum_corners_L[j].x, frustum_corners_L[j].y, frustum_corners_L[j].z, frustum_corners_L[j].w);
+
+			min_x = fminf(min_x, frustum_corners_L[j].x);
+			max_x = fmaxf(max_x, frustum_corners_L[j].x);
+			min_y = fminf(min_y, frustum_corners_L[j].y);
+			max_y = fmaxf(max_y, frustum_corners_L[j].y);
+			min_z = fminf(min_z, frustum_corners_L[j].z);
+			max_z = fmaxf(max_z, frustum_corners_L[j].z);
+		}
+
+		// set VP matrix for light (flip-z)
+		light_matrices[i] = ortho(min_x, max_x, min_y, max_y, -max_z, -min_z) * view_matrix_light;
+		shadow_sbpv_matrices[i] = scale_bias_matrix * light_matrices[i];
+		printf("\n\tBounding Box: %f %f %f %f %f %f\n", min_x, max_x, min_y, max_y, -max_z, -min_z);
+		// reference for how it work : https://blog.csdn.net/ZJU_fish1996/article/details/103689924
+	}
+	// -------------------------------------------------------------------------------------------
+
 	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LEQUAL);
@@ -445,6 +578,27 @@ void My_Init()
 	glGenFramebuffers(1, &ssao_fbo);
 }
 
+void Set_Cascade_Uniform(Shader *shader) {
+	(*shader).use();
+	// Set shadow texture index  NOTICE texture index
+	for (int i = 0; i < NUM_CSM; ++i) {
+		// depth texture
+		ostringstream oss;
+		oss << "uDepthTexture[" << i + 3 << "]";
+		(*shader).setInt(oss.str(), i + 3);
+		glActiveTexture(GL_TEXTURE0 + i + 3);
+		glBindTexture(GL_TEXTURE_2D, depth_frames[i].depth_texture);
+	}
+	// light matrix
+	(*shader).setMat4("csm_L[0]", light_matrices[0], NUM_CSM);
+
+	for (int i = 0; i < NUM_CSM; ++i) {
+		ostringstream oss;
+		oss << "uCascadedRange_C[" << i << "]";
+		(*shader).setFloat(oss.str(), csm_range_C[i]);
+	}
+}
+
 void Render_Loaded_Model(mat4 projection, mat4 view)
 {
 	// render terrain
@@ -502,6 +656,11 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 		(*castleShader).setBool("display_normal_mapping", 1);
 	else
 		(*castleShader).setBool("display_normal_mapping", 0);
+	// cascade shadow mapping
+	if (enable_cascade_shadow)
+		(*castleShader).setBool("enable_cascade_shadow", 1);
+	else
+		(*castleShader).setBool("enable_cascade_shadow", 0);
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
 	(*castleShader).setInt("shadow_tex", 2);
@@ -513,6 +672,33 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*castleShader).setVec3("eye_pos", camera.Position);
 
 	(*castleShader).setMat4("model", model_castle);
+	//Set_Cascade_Uniform(castleShader);
+
+	// Set shadow texture index  NOTICE texture index
+	for (int i = 0; i < NUM_CSM; ++i) {
+		// depth texture
+		ostringstream oss;
+		oss << "uDepthTexture[" << i << "]";
+		(*castleShader).setInt(oss.str(), i + 3);
+		glActiveTexture(GL_TEXTURE0 + i + 3);
+		glBindTexture(GL_TEXTURE_2D, depth_frames[i].depth_texture);
+	}
+	// light matrix
+	(*castleShader).setMat4("csm_L[0]", light_matrices[0], NUM_CSM);
+
+	// shadow matrices
+	for (int i = 0; i < NUM_CSM; ++i) {
+		ostringstream oss;
+		oss << "shadow_matrices[" << i << "]";
+		(*castleShader).setMat4(oss.str(), shadow_sbpv_matrices[i] * model_castle);
+	}
+
+	// range
+	for (int i = 0; i < NUM_CSM; ++i) {
+		ostringstream oss;
+		oss << "uCascadedRange_C[" << i << "]";
+		(*castleShader).setFloat(oss.str(), csm_range_C[i]);
+	}
 	(*castleModel).Draw((*castleShader));
 
 	// render the loaded splat model
@@ -562,6 +748,12 @@ void My_Display()
 {
 	// shadow test
 	glEnable(GL_DEPTH_TEST);
+	/*
+	if (enable_cascade_shadow)
+		cascade_shadow(Models, Shaders, model_matrixs);
+	else
+		shadow(Models, Shaders, model_matrixs);*/
+	cascade_shadow(Models, Shaders, model_matrixs);
 	shadow(Models, Shaders, model_matrixs);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	// shadow test end
@@ -574,9 +766,8 @@ void My_Display()
 	glBufferData(GL_ARRAY_BUFFER, sizeof(rightQuadVertices), &rightQuadVertices, GL_STATIC_DRAW);
 	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(rightQuadVertices), &rightQuadVertices);
 
-	// view/projection transformations
-	glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
-	glm::mat4 view = camera.GetViewMatrix();
+	projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, camera.NearPlane, camera.FarPlane);
+	view = camera.GetViewMatrix();
 
 	// render
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -599,47 +790,6 @@ void My_Display()
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glEnable(GL_DEPTH_TEST);
 
-	// Draw terrain
-	// ------------
-	/*
-	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
-	static const GLfloat one = 1.0f;
-	glClearBufferfv(GL_DEPTH, 0, &one);
-	(*terrainShader).use();
-	// Bind Textures using texture units
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
-	(*terrainShader).setInt("tex_displacement", 0);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, terrainTexture);
-	(*terrainShader).setInt("tex_color", 1);
-
-	// shadow uniform
-	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*terrainShader).setInt("shadow_tex", 2);
-	(*terrainShader).setMat4("shadow_matrix", shadow_matrix);
-
-	glBindVertexArray(terrainVAO);
-
-	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
-	(*terrainShader).setMat4("proj_matrix", projection);
-	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
-	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
-	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
-	(*terrainShader).setInt("tex_color", 1);
-
-	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LEQUAL);
-
-	if (wireframe)
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-	else
-		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
-	glBindVertexArray(0);
-	*/
 	// render the loaded models
 	// ------------------------------
 	Render_Loaded_Model(projection, view);
@@ -747,6 +897,8 @@ void My_Reshape(int width, int height)
 	lastX = SCR_WIDTH / 2.0f;
 	lastY = SCR_HEIGHT / 2.0f;
 	prevY = SCR_HEIGHT / 2.0f;
+	projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, camera.NearPlane, camera.FarPlane);
+	view = camera.GetViewMatrix();
 
 	glGenFramebuffers(1, &shadowBuffer.fbo);
 	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
@@ -978,6 +1130,9 @@ void My_Keyboard(unsigned char key, int x, int y)
 			break;
 		case 'p':
 			display_normal_mapping = !display_normal_mapping;
+			break;
+		case 'c':
+			enable_cascade_shadow = !enable_cascade_shadow;
 			break;
 		default:
 			cout << "Nothing" << endl;

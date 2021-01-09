@@ -1,4 +1,7 @@
 #version 420 core
+
+const int NUM_CSM = 3;
+
 out vec4 FragColor;
 
 in vec3 Normal;
@@ -10,21 +13,53 @@ in vec4 shadow_coord;
 in vec3 tangentLightPos;
 in vec3 tangentViewPos;
 in vec3 tangentFragPos;
+in vec3 csmPos_W;
+in vec4 csmPos_L[NUM_CSM];
+in float csmPos_C;
+in vec4 CSM_coord[NUM_CSM];
 
 uniform sampler2D texture_diffuse1;
 uniform sampler2D texture_normal1; // NOTICE texture index
-uniform sampler2DShadow shadow_tex;
+uniform sampler2DShadow shadow_tex; // NOTICE shadow tex index
+uniform sampler2D uDepthTexture[NUM_CSM]; // NOTICE shadow tex index
 uniform bool using_normal_color;
 uniform bool display_normal_mapping;
+uniform bool enable_cascade_shadow;
 
 // Material properties
 uniform vec3 diffuse_albedo = vec3(0.35);
 uniform vec3 specular_albedo = vec3(0.7);
 uniform float specular_power = 200.0;
+uniform float uCascadedRange_C[NUM_CSM];
 
 // Position of light and eyes
 uniform vec3 light_pos;
 uniform vec3 eye_pos;
+
+float check_shadow(int cascaded_idx, vec4 curr_pos, vec3 N, vec3 L)
+{
+	vec3 proj_coord = curr_pos.xyz / curr_pos.w;
+	if (proj_coord.z > 1.f) {
+		return 0.f;
+	}
+	proj_coord = proj_coord * 0.5f + 0.5f;
+
+	// from camera view
+	float curr_depth = proj_coord.z;
+	// from light view
+	float occ_depth = texture(uDepthTexture[cascaded_idx], proj_coord.xy).r;
+
+	// adaptive bias
+	float bias = 0.005f * tan(acos(dot(N, L)));
+	bias = clamp(bias, 0.f, 0.01f);
+
+	if (occ_depth < curr_depth - bias) {
+		return 0.5f;
+	}
+	else {
+		return 1.0f;
+	}
+}
 
 void main()
 {    
@@ -56,12 +91,46 @@ void main()
 
     float shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.6 + 0.4;
 
+	// Cascade shadow
+	float cascade_shadow_factor;
+	vec4 cascaded_indicator = vec4(0.f);
+
+	// choose level of detail for CSM in clip space
+	for (int i = 0; i < NUM_CSM; ++i) {
+		if (csmPos_C <= uCascadedRange_C[i]) {
+			cascade_shadow_factor = check_shadow(i, csmPos_L[i], N, L);
+			//cascade_shadow_factor = textureProj(uDepthTexture[i], CSM_coord[i]).r * 0.8 + 0.2;
+
+			// visualize frustum sections
+			if (i == 0) {
+				cascaded_indicator = vec4(0.07f, 0.f, 0.f, 0.f);
+			}
+			else if (i == 1) {
+				cascaded_indicator = vec4(0.f, 0.07f, 0.f, 0.f);
+			}
+			else if (i == 2) {
+				cascaded_indicator = vec4(0.f, 0.f, 0.07f, 0.f);
+			}
+
+			break;
+		}
+	}
+	if (enable_cascade_shadow)
+		shadow_factor = cascade_shadow_factor;
+
     if (using_normal_color)
         FragColor = vec4(Normal, 1.0f);
     else {
         //FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
         //FragColor = vec4(shadow_factor, shadow_factor, shadow_factor, 1.0);
         FragColor = texture(texture_diffuse1, TexCoords) * vec4(shadow_factor * (ambient + diffuse + specular), 1.0);
+		/*
+		if (enable_cascade_shadow)
+			if (shadow_factor < 0.6)
+				FragColor = FragColor + cascaded_indicator;
+			else
+				FragColor = FragColor;
+				*/
         //FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
         //FragColor = vec4(ambient + diffuse + specular, 1.0);
     }

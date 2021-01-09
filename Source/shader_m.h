@@ -138,9 +138,9 @@ public:
 	{
 		glUniform3fv(glGetUniformLocation(ID, name.c_str()), 1, &value[0]);
 	}
-	void setMat4(const std::string &name, const glm::mat4 &mat) const
+	void setMat4(const std::string &name, const glm::mat4 &mat, int num=1) const
 	{
-		glUniformMatrix4fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE, &mat[0][0]);
+		glUniformMatrix4fv(glGetUniformLocation(ID, name.c_str()), num, GL_FALSE, &mat[0][0]);
 	}
 	void setBlock(const std::string &name) const
 	{

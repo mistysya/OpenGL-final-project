@@ -5,6 +5,8 @@ layout (location = 2) in vec2 aTexCoords;
 layout (location = 3) in vec3 aTangent;
 layout (location = 4) in vec3 aBitangent;
 
+const int NUM_CSM = 3;
+
 out vec2 TexCoords;
 out vec3 Normal;
 out vec3 N;
@@ -14,10 +16,16 @@ out vec4 shadow_coord;
 out vec3 tangentLightPos;
 out vec3 tangentViewPos;
 out vec3 tangentFragPos;
+out vec3 csmPos_W;
+out vec4 csmPos_L[NUM_CSM];
+out float csmPos_C;
+out vec4 CSM_coord[NUM_CSM];
 
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
+uniform mat4 csm_L[NUM_CSM];
+uniform mat4 shadow_matrices[NUM_CSM];
 
 // Position of light and eyes
 uniform vec3 light_pos;
@@ -46,8 +54,16 @@ void main()
 	tangentViewPos = TBN * eye_pos;
 	tangentFragPos = TBN * vec3(model * vec4(aPos, 1.0));
 
-
-	shadow_coord = shadow_matrix * vec4(aPos, 1.0);
-
     gl_Position = projection * view * model * vec4(aPos, 1.0);
+
+	// Cascade shadow
+	for (int i = 0; i < NUM_CSM; ++i) {
+		csmPos_L[i] = csm_L[i] * model * vec4(aPos, 1.0);
+		CSM_coord[i] = shadow_matrices[i] * vec4(aPos, 1.0);
+	}
+	csmPos_C = gl_Position.z;
+	csmPos_W = vec3(model * vec4(aPos, 1.0));
+
+	// shadow
+	shadow_coord = shadow_matrix * vec4(aPos, 1.0);
 }
