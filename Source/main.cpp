@@ -79,11 +79,26 @@ struct
 	GLuint depth_map;
 } gbuffer;
 
+// water ripple effect
+GLuint program_drop;
+GLuint program_water;
+GLuint waterBufferIn;
+GLuint waterBufferOut;
+GLuint ripple_vao;
+float timeElapsed = 0.0f;
+bool rain = false;
+struct WaterColumn
+{
+	float height;
+	float flow;
+};
+
 // model_matrix
 mat4 model_castle;
 mat4 model_splat;
 mat4 model_soldier;
 mat4 terrain_model;
+mat4 model_water;
 vector<mat4> model_matrixs;
 
 // light position
@@ -112,6 +127,7 @@ Shader *skyboxShader;
 Shader* terrainShader;
 Shader *depthShader;
 Shader *ssaoShader;
+Shader *waterShader;
 vector<Shader*> Shaders;
 
 // load models
@@ -224,6 +240,17 @@ void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_m
 	glDisable(GL_POLYGON_OFFSET_FILL);
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+}
+
+void AddDrop()
+{
+	// Randomly add a "drop" of water into the grid system.
+	glUseProgram(program_drop);
+	glUniform2ui(0, rand() % 150+15, rand() % 150+15);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferIn);
+	glDispatchCompute(10, 10, 1);
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+	model_water *= translate(mat4(1.0f), vec3(0.0, -0.00075, 0.0));
 }
 
 void My_Init()
@@ -366,7 +393,8 @@ void My_Init()
 	// calculate model matrix
 	terrain_model = calculate_model(vec3(0.0f, -20.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(5.0f, 5.0f, 5.0f));
 	model_castle = calculate_model(vec3(0.0f, -1.75f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
-	model_splat = calculate_model(vec3(-13.0f, -1.5f, -5.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.3f, 0.1f, 0.3f));
+	model_splat = calculate_model(vec3(13.0f, -1.5f, -6.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.4f, 0.1f, 0.4f));
+	model_water = calculate_model(vec3(60.0f, -63.0f, -57.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.16f, 1.0f, 0.18f));
 	model_soldier = calculate_model(vec3(-23.0f, 6.75f, 0.0f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
 	// model_matrix vector
 	//model_matrixs.push_back(terrain_model);
@@ -443,6 +471,61 @@ void My_Init()
 	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, gbuffer.depth_map, 0);
 
 	glGenFramebuffers(1, &ssao_fbo);
+
+	// Initialize random seed for water ripple effect
+	// -----------------------------------------
+	srand(time(NULL));
+	{
+		program_drop = glCreateProgram();
+		GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
+		char** drop_cs = loadShaderSource("drop.cs.glsl");
+		glShaderSource(cs, 1, drop_cs, NULL);
+		glCompileShader(cs);
+		glAttachShader(program_drop, cs);
+		glLinkProgram(program_drop);
+	}
+	{
+		program_water = glCreateProgram();
+		GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
+		char** water_cs = loadShaderSource("water.cs.glsl");
+		glShaderSource(cs, 1, water_cs, NULL);
+		glCompileShader(cs);
+		glAttachShader(program_water, cs);
+		glLinkProgram(program_water);
+	}
+
+	// Create two water grid buffers of 180 * 180 water columns.
+	glGenBuffers(1, &waterBufferIn);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, waterBufferIn);
+	// Create initial data.
+	WaterColumn *ripple_data = new WaterColumn[32400];
+	for (int x = 0; x < 180; ++x)
+	{
+		for (int y = 0; y < 180; ++y)
+		{
+			int idx = y * 180 + x;
+			ripple_data[idx].height = 60.0f;
+			ripple_data[idx].flow = 0.0f;
+		}
+	}
+	glBufferStorage(GL_SHADER_STORAGE_BUFFER, sizeof(WaterColumn) * 32400, ripple_data, GL_DYNAMIC_STORAGE_BIT);
+	delete[] ripple_data;
+
+	glGenBuffers(1, &waterBufferOut);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, waterBufferOut);
+	glBufferStorage(GL_SHADER_STORAGE_BUFFER, sizeof(WaterColumn) * 32400, NULL, GL_DYNAMIC_STORAGE_BIT);
+
+	glGenVertexArrays(1, &ripple_vao);
+	glBindVertexArray(ripple_vao);
+
+	// Create an index buffer of 2 triangles, 6 vertices.
+	uint indices[] = { 0, 2, 3, 0, 3, 1 };
+	GLuint ebo;
+	glGenBuffers(1, &ebo);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+	glBufferStorage(GL_ELEMENT_ARRAY_BUFFER, sizeof(uint) * 6, indices, GL_DYNAMIC_STORAGE_BIT);
+
+	AddDrop();
 }
 
 void Render_Loaded_Model(mat4 projection, mat4 view)
@@ -515,8 +598,31 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*castleShader).setMat4("model", model_castle);
 	(*castleModel).Draw((*castleShader));
 
-	// render the loaded splat model
+	// render the loaded splat model and water ripple effect here ahhhhhhhhhhhhh
 	// --------------------------------------
+	// Update water grid.
+	glUseProgram(program_water);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferIn);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, waterBufferOut);
+	// Each group updates 18 * 18 of the grid. We need 10 * 10 groups in total.
+	glDispatchCompute(10, 10, 1);
+	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+	(*waterShader).use();
+	glBindVertexArray(ripple_vao);
+	(*waterShader).setMat4("projection", projection);
+	(*waterShader).setMat4("view", view);
+	(*waterShader).setMat4("model", model_water);
+	(*waterShader).setVec3("light_pos", light_position);
+	(*waterShader).setVec3("eye_pos", camera.Position);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferOut);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	(*waterShader).setInt("tex_cubemap", 0);
+	glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, 179 * 179);
+
+	std::swap(waterBufferIn, waterBufferOut);
+	
+
 	(*splatShader).use();
 	// use normal color
 	if (using_normal_color)
@@ -529,7 +635,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*splatShader).setVec3("light_pos", light_position);
 	(*splatShader).setVec3("eye_pos", camera.Position);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
-	(*skyboxShader).setInt("tex_cubemap", 0);
+	(*splatShader).setInt("tex_cubemap", 0);
 
 	(*splatShader).setMat4("model", model_splat);
 	(*splatModel).Draw((*splatShader));
@@ -575,7 +681,7 @@ void My_Display()
 	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(rightQuadVertices), &rightQuadVertices);
 
 	// view/projection transformations
-	glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
+	glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 1000.0f);
 	glm::mat4 view = camera.GetViewMatrix();
 
 	// render
@@ -838,6 +944,13 @@ void My_Timer(int val)
 {
 	timer_cnt++;
 	timerCount++;
+	timeElapsed += 0.8;
+	if (timeElapsed > 1.0f)
+	{
+		if (rain)
+			AddDrop();
+		timeElapsed = 0;
+	}
 	glutPostRedisplay();
 	if (timer_enabled)
 		glutTimerFunc(timer_speed, My_Timer, val);
@@ -979,6 +1092,9 @@ void My_Keyboard(unsigned char key, int x, int y)
 		case 'p':
 			display_normal_mapping = !display_normal_mapping;
 			break;
+		case 'r':
+			rain = !rain;
+			break;
 		default:
 			cout << "Nothing" << endl;
 			break;
@@ -1097,6 +1213,8 @@ int main(int argc, char *argv[])
 	depthShader = &s_depth;
 	Shader s_ssao("ssao.vs.glsl", "ssao.fs.glsl");
 	ssaoShader = &s_ssao;
+	Shader s_water("water.vs.glsl", "water.fs.glsl");
+	waterShader = &s_water;
 
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
