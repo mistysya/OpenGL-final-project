@@ -3,6 +3,9 @@
 out vec4 color;
 
 uniform sampler2D tex_color;
+uniform sampler2DShadow shadow_tex;
+// shadow
+uniform mat4 shadow_matrix;
 
 uniform bool enable_fog = true;
 uniform vec4 fog_color = vec4(0.7, 0.8, 0.9, 0.0);
@@ -30,6 +33,9 @@ vec4 fog(vec4 c)
 void main(void)
 {
     vec4 landscape = texture(tex_color, fs_in.tc);
+	vec4 shadow_coord = shadow_matrix * vec4(fs_in.world_coord.xyz, 1.0);
+	float shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.6 + 0.4;
+	landscape = landscape * vec4(vec3(shadow_factor), 1.0);
 
     if (enable_fog)
     {

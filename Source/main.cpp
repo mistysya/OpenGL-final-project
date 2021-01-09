@@ -447,9 +447,49 @@ void My_Init()
 
 void Render_Loaded_Model(mat4 projection, mat4 view)
 {
+	// render terrain
+	// --------------
+	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
+	static const GLfloat one = 1.0f;
+	glClearBufferfv(GL_DEPTH, 0, &one);
+	(*terrainShader).use();
+	// Bind Textures using texture units
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
+	(*terrainShader).setInt("tex_displacement", 0);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, terrainTexture);
+	(*terrainShader).setInt("tex_color", 1);
+
+	// shadow uniform
+	glActiveTexture(GL_TEXTURE2);
+	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+	(*terrainShader).setInt("shadow_tex", 2);
+	(*terrainShader).setMat4("shadow_matrix", shadow_matrix);
+
+	glBindVertexArray(terrainVAO);
+
+	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
+	(*terrainShader).setMat4("proj_matrix", projection);
+	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
+	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
+	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
+	(*terrainShader).setInt("tex_color", 1);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+
+	if (wireframe)
+		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+	else
+		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
+	glBindVertexArray(0);
+
 	// render the loaded castle model
 	// --------------------------------------
-	mat4 shadow_matrix = shadow_sbpv_matrix * model_castle;
+	shadow_matrix = shadow_sbpv_matrix * model_castle;
 
 	(*castleShader).use();
 	// use normal color
@@ -560,6 +600,8 @@ void My_Display()
 	glEnable(GL_DEPTH_TEST);
 
 	// Draw terrain
+	// ------------
+	/*
 	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
 	static const GLfloat one = 1.0f;
 	glClearBufferfv(GL_DEPTH, 0, &one);
@@ -597,7 +639,7 @@ void My_Display()
 
 	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
 	glBindVertexArray(0);
-
+	*/
 	// render the loaded models
 	// ------------------------------
 	Render_Loaded_Model(projection, view);
@@ -1049,7 +1091,7 @@ int main(int argc, char *argv[])
 	blurShader = &s_blur;
 	Shader s_skybox("skybox.vs.glsl", "skybox.fs.glsl");
 	skyboxShader = &s_skybox;
-	Shader s_terrain("terrain.vs.glsl", "terrain.fs.glsl", "terrain.tcs", "terrain.tes");
+	Shader s_terrain("terrain.vs.glsl", "terrain.fs.glsl", "terrain.tcs.glsl", "terrain.tes.glsl");
 	terrainShader = &s_terrain;
 	Shader s_depth("depth.vs.glsl", "depth.fs.glsl");
 	depthShader = &s_depth;

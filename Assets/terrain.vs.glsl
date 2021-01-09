@@ -1,6 +1,6 @@
 #version 420 core
 
-out VS_OUT{ vec2 tc;} vs_out;    
+out VS_OUT{ vec2 tc;} vs_out;
 
 void main()
 {
