@@ -1017,7 +1017,8 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 
 	//draw grass
 	(*grassShader).use();
-	(*grassShader).setMat4("mvpMatrix", projection * view * model_castle);
+	mat4 model_grass = model_castle * translate(mat4(1.0), vec3(0.0, -20.0, 0.0));
+	(*grassShader).setMat4("mvpMatrix", projection * view * model_grass);
 	(*grassShader).setInt("Time", glutGet(GLUT_ELAPSED_TIME) * 0.05);
 
 	glEnable(GL_DEPTH_TEST);
