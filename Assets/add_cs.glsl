@@ -33,6 +33,7 @@ void main(void)
         float rand1 = rand(randomSeed + vec2(float(gl_GlobalInvocationID.x * 2)));                              
         float rand2 = rand(randomSeed + vec2(float(gl_GlobalInvocationID.x * 2 + 1)));                          
         particles[idx].position = vec3(0, 0, 0);                                                                
+        particles[idx].velocity = normalize(vec3(5.0 + rand2 * 5.0, cos(rand1 * PI2), sin(rand1 * PI2) + 3.3)) * 0.15;
         particles[idx].lifeTime = 0;                                                                            
     }                                                                                                           
 }                                                                             
