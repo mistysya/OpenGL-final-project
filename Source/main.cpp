@@ -306,6 +306,15 @@ void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4>
 		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, shadowBuffers[i].fbo);
 		glClear(GL_DEPTH_BUFFER_BIT);
 
+		// terrain
+		(*depthShader).setMat4("mvp", light_vp_matrices[i] * terrain_model);
+		if (wireframe)
+			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+		else
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+		glBindVertexArray(terrainVAO);
+		glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
+
 		// obj
 		for (auto j = 0; j < Mod.size(); ++j) {
 			(*depthShader).setMat4("mvp", light_vp_matrices[i] * model_matrix[j]);
@@ -919,6 +928,8 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
 	(*terrainShader).setInt("shadow_tex", 2);
 	(*terrainShader).setMat4("shadow_matrix", shadow_matrix);
+	// cascade shadow
+	CSM_uniform(terrainShader, terrain_model);
 
 	glBindVertexArray(terrainVAO);
 
@@ -928,6 +939,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
 	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
 	(*terrainShader).setInt("tex_color", 1);
+	
 	//(*terrainShader).setVec3("plane", plane);
 	//(*terrainShader).setFloat("plane_height", height);
 	//(*castleShader).setMat4("model", terrain_model);
@@ -996,7 +1008,12 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	// Draw particles using updated buffers using additive blending.
 	glBindVertexArray(particle_vao);
 	glUseProgram(renderProgram);
-	model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.08f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	vec3 pos_arr[] = { vec3(-65.0f, 10.75f, 21.5f),
+					   vec3(-58.0f, 26.0f, 6.5f),
+					   vec3(-54.0f, 26.0f, 6.5f),
+					   vec3(-41.0f, 17.6f, 35.5f) };
+	//model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.08f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	model_smoke = calculate_model(pos_arr[0], 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
 	glUniformMatrix4fv(0, 1, GL_FALSE, value_ptr(view * model_smoke));
 	glUniformMatrix4fv(1, 1, GL_FALSE, value_ptr(projection));
 	glActiveTexture(GL_TEXTURE0);
@@ -1019,6 +1036,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	//draw grass
 	(*grassShader).use();
 	mat4 model_grass = model_castle * translate(mat4(1.0), vec3(0.0, -20.0, 0.0));
+	model_grass = glm::scale(model_grass, vec3(0.5, 1.0, 0.5));
 	(*grassShader).setMat4("mvpMatrix", projection * view * model_grass);
 	(*grassShader).setInt("Time", glutGet(GLUT_ELAPSED_TIME) * 0.05);
 
