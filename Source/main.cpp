@@ -939,6 +939,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
 	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
 	(*terrainShader).setInt("tex_color", 1);
+	(*terrainShader).setBool("use_cascade", use_cascade);
 	
 	//(*terrainShader).setVec3("plane", plane);
 	//(*terrainShader).setFloat("plane_height", height);
