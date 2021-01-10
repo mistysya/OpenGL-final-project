@@ -16,7 +16,9 @@ layout(std140, binding=0) buffer Particles
                                                                                                                 
 layout(binding = 0, offset = 0) uniform atomic_uint count;                                                      
 layout(location = 0) uniform uint addCount;                                                                     
-layout(location = 1) uniform vec2 randomSeed;                                                                   
+layout(location = 1) uniform vec2 randomSeed;       
+
+uniform bool first;
                                                                                                                 
 float rand(vec2 n)                                                                                              
 {                                                                                                               
@@ -32,8 +34,11 @@ void main(void)
         uint idx = atomicCounterIncrement(count);                                                               
         float rand1 = rand(randomSeed + vec2(float(gl_GlobalInvocationID.x * 2)));                              
         float rand2 = rand(randomSeed + vec2(float(gl_GlobalInvocationID.x * 2 + 1)));                          
-        particles[idx].position = vec3(0, 0, 0);                                                                
-        particles[idx].velocity = normalize(vec3(5.0 + rand2 * 5.0, cos(rand1 * PI2), sin(rand1 * PI2) + 3.3)) * 0.15;
+        particles[idx].position = vec3(0, 0, 0);
+		if(first)
+	        particles[idx].velocity = normalize(vec3(5.0 + rand2 * 5.0, cos(rand1 * PI2), sin(rand1 * PI2) + 3.3)) * 0.15;
+		else
+			particles[idx].velocity = normalize(vec3(5.0 + rand2 * 5.0, cos(rand1 * PI2), sin(rand1 * PI2) + 9.3)) * 0.15;
         particles[idx].lifeTime = 0;                                                                            
     }                                                                                                           
 }                                                                             

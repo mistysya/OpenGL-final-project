@@ -720,7 +720,7 @@ void My_Init()
 	// calculate model matrix
 	terrain_model = calculate_model(vec3(0.0f, -50.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(15.0f, 15.0f, 15.0f));
 	model_castle = calculate_model(vec3(-55.0f, 10.5f, 21.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.7f, 0.7f, 0.7f));
-	model_splat = calculate_model(vec3(13.0f, -1.5f, -6.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.4f, 0.1f, 0.4f));
+	model_splat = calculate_model(vec3(5.0f, 0.0f, -35.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.4f, 0.1f, 0.4f));
 	model_rain = calculate_model(vec3(185.0f, -58.95f, -170.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 1.0f, 0.5f)); //-54
 	model_water = calculate_model(vec3(-45.0f, 5.95f, -40.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(20.f, 1.0f, 30.f)); //-54
 	//model_soldier = calculate_model(vec3(-65.0f, 10.75f, 21.5f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
@@ -996,11 +996,31 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	// Draw particles using updated buffers using additive blending.
 	glBindVertexArray(particle_vao);
 	glUseProgram(renderProgram);
-	model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.08f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	//model_smoke = model_soldier[0] * translate(mat4(1.0), vec3(4.0f, 3.0f, 0.0f));
+
+	//first fire
+	model_smoke = calculate_model(vec3(-62.7f, 13.55f, 21.65f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
 	glUniformMatrix4fv(0, 1, GL_FALSE, value_ptr(view * model_smoke));
 	glUniformMatrix4fv(1, 1, GL_FALSE, value_ptr(projection));
+	glUniform1i(glGetUniformLocation(renderProgram, "first"), 1);
 	glActiveTexture(GL_TEXTURE0);
 	if(rain)
+		glBindTexture(GL_TEXTURE_2D, particleTexture_smoke);
+	else
+		glBindTexture(GL_TEXTURE_2D, particleTexture_spark);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_ONE, GL_ONE);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleOut.shaderStorageBuffer);
+	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, particleOut.indirectBuffer);
+	glDrawArraysIndirect(GL_POINTS, 0);
+
+	//second fire
+	model_smoke = calculate_model(vec3(-39.5f, 20.35f, 37.2f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	glUniformMatrix4fv(0, 1, GL_FALSE, value_ptr(view * model_smoke));
+	glUniformMatrix4fv(1, 1, GL_FALSE, value_ptr(projection));
+	glUniform1i(glGetUniformLocation(renderProgram, "first"), 0);
+	glActiveTexture(GL_TEXTURE0);
+	if (rain)
 		glBindTexture(GL_TEXTURE_2D, particleTexture_smoke);
 	else
 		glBindTexture(GL_TEXTURE_2D, particleTexture_spark);
@@ -1019,6 +1039,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	//draw grass
 	(*grassShader).use();
 	mat4 model_grass = model_castle * translate(mat4(1.0), vec3(0.0, -20.0, 0.0));
+	model_grass = glm::scale(model_grass, vec3(0.5, 1.0, 0.5));
 	(*grassShader).setMat4("mvpMatrix", projection * view * model_grass);
 	(*grassShader).setInt("Time", glutGet(GLUT_ELAPSED_TIME) * 0.05);
 
