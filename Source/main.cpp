@@ -37,7 +37,7 @@ float lastFrame = 0.0f;
 unsigned int timerCount = 0;
 
 // camera
-Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
+Camera camera(glm::vec3(-50.0f, 30.0f, 13.0f));
 float lastX = SCR_WIDTH / 2.0f;
 float lastY = SCR_HEIGHT / 2.0f;
 bool firstMouse = true;
@@ -52,7 +52,7 @@ bool slideMode = false;
 bool lbuttonPress = false;
 
 // post-processing
-int effectID = 1;
+int effectID = 0;
 bool using_normal_color = false;
 bool display_normal_mapping = false;
 float magnifyCenter_x = SCR_WIDTH / 2;
@@ -96,7 +96,7 @@ struct WaterColumn
 // model_matrix
 mat4 model_castle;
 mat4 model_splat;
-mat4 model_soldier;
+vector<mat4> model_soldier;
 mat4 model_smoke;
 mat4 terrain_model;
 mat4 model_water;
@@ -176,12 +176,12 @@ Model *splatModel;
 vector<Model*> Models;
 
 // skybox texture path
-const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps\\posx.jpg",
-								 "..\\Assets\\cubemaps\\negx.jpg",
-								 "..\\Assets\\cubemaps\\posy.jpg",
-								 "..\\Assets\\cubemaps\\negy.jpg",
-								 "..\\Assets\\cubemaps\\posz.jpg",
-								 "..\\Assets\\cubemaps\\negz.jpg" };
+const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps2\\posx.jpg",
+								 "..\\Assets\\cubemaps2\\negx.jpg",
+								 "..\\Assets\\cubemaps2\\posy.png",
+								 "..\\Assets\\cubemaps2\\negy.png",
+								 "..\\Assets\\cubemaps2\\posz.jpg",
+								 "..\\Assets\\cubemaps2\\negz.jpg" };
 
 // framebuffer vertice
 float leftQuadVertices[] = {
@@ -244,6 +244,16 @@ mat4 calculate_model(vec3 trans, GLfloat rad, vec3 axis, vec3 scal) {
 	mat4 model = mat4(1.0f);
 	model = glm::translate(model, trans);
 	model = glm::rotate(model, glm::radians(rad), axis);
+	model = glm::scale(model, scal);
+	return model;
+}
+
+mat4 calculate_model_multi_angle(vec3 trans, int num_angle, vector<GLfloat> rad, vector<vec3> axis, vec3 scal) {
+	mat4 model = mat4(1.0f);
+	model = glm::translate(model, trans);
+	for (int i = 0; i < num_angle; i++) {
+		model = glm::rotate(model, glm::radians(rad[i]), axis[i]);
+	}
 	model = glm::scale(model, scal);
 	return model;
 }
@@ -502,24 +512,59 @@ void My_Init()
 	stbi_image_free(data);
 
 	// calculate model matrix
-	terrain_model = calculate_model(vec3(0.0f, -20.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(5.0f, 5.0f, 5.0f));
-	model_castle = calculate_model(vec3(0.0f, -1.75f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	terrain_model = calculate_model(vec3(0.0f, -50.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(15.0f, 15.0f, 15.0f));
+	model_castle = calculate_model(vec3(-55.0f, 10.5f, 21.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.7f, 0.7f, 0.7f));
 	model_splat = calculate_model(vec3(13.0f, -1.5f, -6.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.4f, 0.1f, 0.4f));
 	model_water = calculate_model(vec3(60.0f, -63.0f, -57.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.16f, 1.0f, 0.18f));
-	model_soldier = calculate_model(vec3(-23.0f, 6.75f, 0.0f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
+	//model_soldier = calculate_model(vec3(-65.0f, 10.75f, 21.5f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
+
+	vector<GLfloat> soldier_angle;
+	vector<vec3> soldier_axis;
+	// Pos
+	vec3 pos_arr[] = { vec3(-65.0f, 10.75f, 21.5f),
+					   vec3(-58.0f, 26.0f, 6.5f),
+					   vec3(-54.0f, 26.0f, 6.5f),
+	                   vec3(-41.0f, 17.6f, 35.5f) };
+	// Angle
+	vector<GLfloat> angle_arr[] = { vector<GLfloat>{-90.f},
+								    vector<GLfloat>{-90.f, 90.f},
+									vector<GLfloat>{-90.f, -90.f},
+									vector<GLfloat>{-90.f, -45.f} };
+	vector<vec3> axis_arr[] = { vector<vec3>{ vec3(1.0, 0.0, 0.0)},
+								vector<vec3>{ vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0)},
+								vector<vec3>{ vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0)},
+								vector<vec3>{ vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 1.0)} };
+	for (int i = 0; i < (sizeof(pos_arr) / sizeof(*pos_arr)); i++) {
+		for (int j = 0; j < angle_arr[i].size(); j++) {
+			soldier_angle.push_back(angle_arr[i][j]);
+			soldier_axis.push_back(axis_arr[i][j]);
+		}
+		model_soldier.push_back(calculate_model_multi_angle(pos_arr[i], soldier_angle.size(), soldier_angle, soldier_axis, vec3(0.5f, 0.5f, 0.5f)));
+		soldier_angle.clear();
+		soldier_axis.clear();
+	}
+	cout << model_soldier.size() << endl;
 	// model_matrix vector
 	//model_matrixs.push_back(terrain_model);
 	model_matrixs.push_back(model_castle);
 	model_matrixs.push_back(model_splat);
-	model_matrixs.push_back(model_soldier);
+	for (int i = 0; i < model_soldier.size(); ++i) {
+		model_matrixs.push_back(model_soldier[i]);
+	}
 	// model vector
 	Models.push_back(castleModel);
 	Models.push_back(splatModel);
-	Models.push_back(soldierFiringModel);
+	//Models.push_back(soldierFiringModel);
+	for (int i = 0; i < model_soldier.size(); ++i) {
+		Models.push_back(soldierFiringModel);
+	}
 	// shader vector
 	Shaders.push_back(castleShader);
 	Shaders.push_back(splatShader);
 	Shaders.push_back(soldierShader);
+	for (int i = 0; i < model_soldier.size(); ++i) {
+		Shaders.push_back(soldierShader);
+	}
 	//Shaders.push_back(terrainShader);
 
 	// Set up ssao
@@ -785,26 +830,28 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 
 	// render the loaded soldier firing model
 	// --------------------------------------
-	shadow_matrix = shadow_sbpv_matrix * model_soldier;
+	for (int i = 0; i < model_soldier.size(); ++i) {
+		shadow_matrix = shadow_sbpv_matrix * model_soldier[i];
 
-	(*soldierShader).use();
-	// use normal color
-	if (using_normal_color)
-		(*soldierShader).setBool("using_normal_color", 1);
-	else
-		(*soldierShader).setBool("using_normal_color", 0);
-	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*soldierShader).setInt("shadow_tex", 2);
-	(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
+		(*soldierShader).use();
+		// use normal color
+		if (using_normal_color)
+			(*soldierShader).setBool("using_normal_color", 1);
+		else
+			(*soldierShader).setBool("using_normal_color", 0);
+		glActiveTexture(GL_TEXTURE2);
+		glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
+		(*soldierShader).setInt("shadow_tex", 2);
+		(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
 
-	(*soldierShader).setMat4("projection", projection);
-	(*soldierShader).setMat4("view", view);
-	(*soldierShader).setVec3("light_pos", light_position);
-	(*soldierShader).setVec3("eye_pos", camera.Position);
+		(*soldierShader).setMat4("projection", projection);
+		(*soldierShader).setMat4("view", view);
+		(*soldierShader).setVec3("light_pos", light_position);
+		(*soldierShader).setVec3("eye_pos", camera.Position);
 
-	(*soldierShader).setMat4("model", model_soldier);
-	(*soldierFiringModel).Draw((*soldierShader));
+		(*soldierShader).setMat4("model", model_soldier[i]);
+		(*soldierFiringModel).Draw((*soldierShader));
+	}
 }
 
 void My_Display()
