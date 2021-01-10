@@ -23,11 +23,16 @@ uniform vec3 light_pos;
 uniform vec3 eye_pos;
 uniform mat4 shadow_matrix;
 
+// water
+uniform vec3 plane;
+uniform float plane_height;
 // CSM
 uniform mat4 shadow_matrices[NUM_CSM];
 
 void main()
 {
+	vec4 plane_clip = vec4(plane, plane_height);
+	gl_ClipDistance[0] = dot(model * vec4(aPos, 1.0), plane_clip);
     Normal = aNormal;
     TexCoords = aTexCoords;
 	

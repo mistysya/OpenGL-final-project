@@ -32,8 +32,14 @@ uniform mat4 shadow_matrix;
 // CSM
 uniform mat4 shadow_matrices[NUM_CSM];
 
+// water
+uniform vec3 plane;
+uniform float plane_height;
+
 void main()
 {
+	vec4 plane_clip = vec4(plane, plane_height);
+	gl_ClipDistance[0] = dot(model * vec4(aPos, 1.0), plane_clip);
     Normal = aNormal;
     TexCoords = aTexCoords; 
 	
