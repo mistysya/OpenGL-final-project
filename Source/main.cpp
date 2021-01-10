@@ -136,6 +136,10 @@ float csm_range[NUM_CSM + 1];
 float csm_range_C[NUM_CSM];
 bool use_cascade = false;
 
+//grass declare
+GLuint grass_buffer;
+GLuint grass_vao;
+
 // shader
 Shader *castleShader;
 Shader *soldierShader;
@@ -149,6 +153,7 @@ Shader *depthShader;
 Shader *ssaoShader;
 Shader *waterShader;
 Shader *rainShader;
+Shader *grassShader;
 vector<Shader*> Shaders;
 
 //particle system declare
@@ -205,12 +210,12 @@ const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps2\\posx.jpg",
 								 "..\\Assets\\cubemaps2\\negy.png",
 								 "..\\Assets\\cubemaps2\\posz.jpg",
 								 "..\\Assets\\cubemaps2\\negz.jpg" };
-const char *rain_skyboxTexPath[6] = { "..\\Assets\\cubemaps3\\posx.jpg",
-									  "..\\Assets\\cubemaps3\\negx.jpg",
-									  "..\\Assets\\cubemaps3\\posy.jpg",
-									  "..\\Assets\\cubemaps3\\negy.jpg",
-									  "..\\Assets\\cubemaps3\\posz.jpg",
-									  "..\\Assets\\cubemaps3\\negz.jpg" };
+const char *rain_skyboxTexPath[6] = { "..\\Assets\\cubemaps2\\posx.jpg",
+									  "..\\Assets\\cubemaps2\\negx.jpg",
+									  "..\\Assets\\cubemaps2\\posy.png",
+									  "..\\Assets\\cubemaps2\\negy.png",
+									  "..\\Assets\\cubemaps2\\posz.jpg",
+									  "..\\Assets\\cubemaps2\\negz.jpg" };
 
 // framebuffer vertice
 float leftQuadVertices[] = {
@@ -488,6 +493,29 @@ void My_Init()
 	glGenVertexArrays(1, &particle_vao);
 	glBindVertexArray(particle_vao);
 	//***particle system init end***
+
+	//***grass init***
+	static const GLfloat grass_blade[] =
+	{
+		-0.3f, 0.0f,
+		 0.3f, 0.0f,
+		-0.20f, 1.0f,
+		 0.1f, 1.3f,
+		-0.05f, 2.3f,
+		 0.0f, 3.3f
+	};
+
+	glGenBuffers(1, &grass_buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, grass_buffer);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(grass_blade), grass_blade, GL_STATIC_DRAW);
+
+	glGenVertexArrays(1, &grass_vao);
+	glBindVertexArray(grass_vao);
+
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+	glEnableVertexAttribArray(0);
+	//***grass init end***
+
 
 	// set shader uniform variable
 	(*leftScreenShader).use();
@@ -986,6 +1014,20 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	glDepthMask(GL_TRUE);
 	// Swap input and output buffer.
 	std::swap(particleIn, particleOut);
+
+
+	//draw grass
+	(*grassShader).use();
+	mat4 model_grass = model_castle * translate(mat4(1.0), vec3(0.0, -20.0, 0.0));
+	(*grassShader).setMat4("mvpMatrix", projection * view * model_grass);
+	(*grassShader).setInt("Time", glutGet(GLUT_ELAPSED_TIME) * 0.05);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+
+	glBindVertexArray(grass_vao);
+	glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 6, 1024 * 1024);
+	//draw grass end
 
 	// render the loaded splat model and water ripple effect here ahhhhhhhhhhhhh
 	// --------------------------------------
@@ -1651,6 +1693,8 @@ int main(int argc, char *argv[])
 	waterShader = &s_water;
 	Shader s_rain("rain.vs.glsl", "rain.fs.glsl");
 	rainShader = &s_rain;
+	Shader s_grass("grass.vert.glsl", "grass.frag.glsl");
+	grassShader = &s_grass;
 
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
