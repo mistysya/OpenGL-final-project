@@ -4,6 +4,8 @@
 //#include "shader_m.h"
 #include "mesh.h"
 #include "time.h"
+#include "csm_helper.h"
+#include <irrklang/irrKlang.h>
 
 #define MENU_TIMER_START 1
 #define MENU_TIMER_STOP 2
@@ -22,6 +24,9 @@
 
 using namespace glm;
 using namespace std;
+using namespace irrklang;
+
+ISoundEngine *SoundEngine = createIrrKlangDevice();
 
 GLubyte timer_cnt = 0;
 bool timer_enabled = true;
@@ -93,6 +98,11 @@ struct WaterColumn
 	float flow;
 };
 
+// object reflection
+GLuint my_cubeTexture;
+GLuint my_depthTexture;
+GLuint my_cubeFBO;
+
 // model_matrix
 mat4 model_castle;
 mat4 model_splat;
@@ -101,21 +111,30 @@ mat4 model_smoke;
 mat4 terrain_model;
 mat4 model_water;
 vector<mat4> model_matrixs;
+mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
 
 // light position
 vec3 light_position = vec3(-50, 45, 76);// vec3(55, 51, 65);
 
-//depth
+//depth for shadow
 mat4 scale_bias_matrix = translate(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f)) *scale(mat4(1.0f), vec3(0.5f, 0.5f, 0.5f));
 const float shadow_range = 75.0f;
 mat4 light_proj_matrix = ortho(-shadow_range, shadow_range, -shadow_range, shadow_range, 0.0f, 1000.0f);
 mat4 light_view_matrix = lookAt(light_position, vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
 mat4 light_vp_matrix = light_proj_matrix * light_view_matrix;
 mat4 shadow_sbpv_matrix = scale_bias_matrix * light_vp_matrix;
-struct {
-	GLuint fbo;
-	GLuint depthMap;
-} shadowBuffer;
+
+// CSM
+vector<mat4> light_vp_matrices;
+vector<mat4> shadow_sbpv_matrices;
+mat4 view_matrix_inv = inverse(camera.GetViewMatrix());
+
+frame_t shadowBuffer; //shadow
+vector<frame_t> shadowBuffers; // cascade shadow mapping
+
+float csm_range[NUM_CSM + 1];
+float csm_range_C[NUM_CSM];
+
 
 // shader
 Shader *castleShader;
@@ -158,7 +177,8 @@ struct ParticleBuffer
 };
 ParticleBuffer particleIn;
 ParticleBuffer particleOut;
-GLuint particleTexture;
+GLuint particleTexture_smoke;
+GLuint particleTexture_spark;
 GLuint updateProgram;
 GLuint addProgram;
 GLuint renderProgram;
@@ -176,12 +196,18 @@ Model *splatModel;
 vector<Model*> Models;
 
 // skybox texture path
-const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps2\\posx.jpg",
-								 "..\\Assets\\cubemaps2\\negx.jpg",
-								 "..\\Assets\\cubemaps2\\posy.png",
-								 "..\\Assets\\cubemaps2\\negy.png",
-								 "..\\Assets\\cubemaps2\\posz.jpg",
-								 "..\\Assets\\cubemaps2\\negz.jpg" };
+const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps\\posx.jpg",
+								 "..\\Assets\\cubemaps\\negx.jpg",
+								 "..\\Assets\\cubemaps\\posy.jpg",
+								 "..\\Assets\\cubemaps\\negy.jpg",
+								 "..\\Assets\\cubemaps\\posz.jpg",
+								 "..\\Assets\\cubemaps\\negz.jpg" };
+const char *rain_skyboxTexPath[6] = { "..\\Assets\\cubemaps\\rain\\posx.jpg",
+									  "..\\Assets\\cubemaps\\rain\\negx.jpg",
+									  "..\\Assets\\cubemaps\\rain\\posy.jpg",
+									  "..\\Assets\\cubemaps\\rain\\negy.jpg",
+									  "..\\Assets\\cubemaps\\rain\\posz.jpg",
+									  "..\\Assets\\cubemaps\\rain\\negz.jpg" };
 
 // framebuffer vertice
 float leftQuadVertices[] = {
@@ -209,6 +235,7 @@ unsigned int rightQuadVAO, rightQuadVBO;
 unsigned int skyboxVAO;
 unsigned int noiseTexture;
 unsigned int skyboxTexture;
+unsigned int rain_skyboxTexture;
 unsigned int blurFramebuffer; // for first blur pass
 unsigned int blurColorbuffer;
 unsigned int framebuffer;
@@ -240,6 +267,59 @@ void freeShaderSource(char** srcp)
 	delete[] srcp;
 }
 
+void CreateFBOCubeMap(int w, int h, unsigned int my_depthTexture, unsigned int my_cubeTexture)
+{
+	//1-generate the depth buffer for the cube map
+	glGenTextures(1, &my_depthTexture);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, my_depthTexture);
+
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+	// loop throw the 6 faces of the cube
+	for (uint i = 0; i < 6; i++)
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_DEPTH_COMPONENT16, w, h, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+
+
+	// 2-generate the color buffer for the cube map simple as we did in cubemapTexture function
+	glGenTextures(1, &my_cubeTexture);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, my_cubeTexture);
+
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+	// loop throw the 6 faces of the cube again
+	for (uint i = 0; i < 6; i++)
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+
+
+	//3- generate the FBO
+	glGenFramebuffers(1, &my_cubeFBO);
+	glBindFramebuffer(GL_FRAMEBUFFER, my_cubeFBO);
+
+	//4-attach CubeMap to FBO
+	glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, my_cubeTexture, 0);
+	glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, my_depthTexture, 0);
+
+	//5- specifiy which buffer will draw
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+	//6- check if every thing is ok
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+		std::cerr << " WARNING : FBO failed " << glCheckFramebufferStatus(GL_FRAMEBUFFER) << std::endl;
+
+
+	//7- unbind after done creating
+	//glBindTexture(GL_TEXTURE_CUBE_MAP,0);
+	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
 mat4 calculate_model(vec3 trans, GLfloat rad, vec3 axis, vec3 scal) {
 	mat4 model = mat4(1.0f);
 	model = glm::translate(model, trans);
@@ -256,6 +336,50 @@ mat4 calculate_model_multi_angle(vec3 trans, int num_angle, vector<GLfloat> rad,
 	}
 	model = glm::scale(model, scal);
 	return model;
+void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
+	(*depthShader).use();
+	glViewport(0, 0, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
+	glEnable(GL_POLYGON_OFFSET_FILL);
+	glPolygonOffset(4.0f, 4.0f);
+	glCullFace(GL_FRONT);
+
+	for (int i = 0; i < NUM_CSM; ++i) {
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, shadowBuffers[i].fbo);
+		glClear(GL_DEPTH_BUFFER_BIT);
+
+		// obj
+		for (auto j = 0; j < Mod.size(); ++j) {
+			(*depthShader).setMat4("mvp", light_vp_matrices[i] * model_matrix[j]);
+			(*Mod[j]).Draw((*Mod_shader[j]));
+		}
+	}
+	glCullFace(GL_BACK);
+	glDisable(GL_POLYGON_OFFSET_FILL);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+}
+
+void CSM_uniform(Shader* shader, mat4 model) {
+	// cascade shadow
+	for (int i = 0; i < NUM_CSM; ++i) {
+
+		// shadow_texes
+		ostringstream oss;
+		oss << "shadow_texes[" << i << "]";
+		glActiveTexture(GL_TEXTURE3 + i);
+		glBindTexture(GL_TEXTURE_2D, shadowBuffers[i].depthMap);
+		(*shader).setInt(oss.str(), 3 + i);
+
+		// shadow matrices
+		ostringstream oss1;
+		oss1 << "shadow_matrices[" << i << "]";
+		(*shader).setMat4(oss1.str(), shadow_sbpv_matrices[i] * model);
+
+		// range
+		ostringstream oss2;
+		oss2 << "uCascadedRange_C[" << i << "]";
+		(*shader).setFloat(oss2.str(), csm_range_C[i]);
+	}
 }
 
 void shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
@@ -389,10 +513,18 @@ void My_Init()
 	glBindBuffer(GL_DRAW_INDIRECT_BUFFER, particleOut.indirectBuffer);
 	glBufferStorage(GL_DRAW_INDIRECT_BUFFER, sizeof(DrawArraysIndirectCommand), &defalutDrawArraysCommand, GL_DYNAMIC_STORAGE_BIT);
 
-	// Create particle texture
+	// Create particle textures
 	texture_data textureData = loadImg("smoke.jpg");
-	glGenTextures(1, &particleTexture);
-	glBindTexture(GL_TEXTURE_2D, particleTexture);
+	glGenTextures(1, &particleTexture_smoke);
+	glBindTexture(GL_TEXTURE_2D, particleTexture_smoke);
+	glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB8, textureData.width, textureData.height);
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, textureData.width, textureData.height, GL_RGBA, GL_UNSIGNED_BYTE, textureData.data);
+	glGenerateMipmap(GL_TEXTURE_2D);
+	delete[] textureData.data;
+
+	textureData = loadImg("spark.jpg");
+	glGenTextures(1, &particleTexture_spark);
+	glBindTexture(GL_TEXTURE_2D, particleTexture_spark);
 	glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB8, textureData.width, textureData.height);
 	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, textureData.width, textureData.height, GL_RGBA, GL_UNSIGNED_BYTE, textureData.data);
 	glGenerateMipmap(GL_TEXTURE_2D);
@@ -427,6 +559,20 @@ void My_Init()
 	for (int i = 0; i < 6; ++i)
 	{
 		texture_data image = loadImg(skyboxTexPath[i]);
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
+			0, GL_RGBA,
+			image.width, image.height,
+			0, GL_RGBA, GL_UNSIGNED_BYTE,
+			image.data);
+	}
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+	glGenTextures(1, &rain_skyboxTexture);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	for (int i = 0; i < 6; ++i)
+	{
+		texture_data image = loadImg(rain_skyboxTexPath[i]);
 		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i,
 			0, GL_RGBA,
 			image.width, image.height,
@@ -510,6 +656,84 @@ void My_Init()
 		std::cout << "Failed to load texture" << std::endl;
 
 	stbi_image_free(data);
+
+	// CSM 
+	shadow_sbpv_matrices.resize(NUM_CSM);
+	light_vp_matrices.resize(NUM_CSM);
+	//mat4 view_matrix_inv = inverse(camera.GetViewMatrix());
+	float aspect_ratio = (float)SCR_WIDTH / (float)SCR_HEIGHT;//(float)SHADOW_MAP_WIDTH / (float)SHADOW_MAP_HEIGHT;
+	float tan_half_hfov = tanf(radians(150.f * 0.5f));
+	float tan_half_vfov = tanf(radians(150.f * aspect_ratio * 0.5f));
+
+	// split frustum into NUM_CSM + 1 levels (flip-z)
+	csm_range[0] = -0.1f; // near plane
+	csm_range[1] = -35.f;
+	csm_range[2] = -75.f;
+	csm_range[3] = -200.0f; // far plane
+
+	//mat4 proj_matrix = perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.f);
+	// change to clip space
+	for (int i = 0; i < NUM_CSM; ++i) {
+		//vec4 view(0.f, 0.f, csm_range[i + 1], 1.f);
+		vec4 view(0.f, 0.f, csm_range[i + 1], 1.f);
+		vec4 clip = projection * view;
+		csm_range_C[i] = clip.z;
+	}
+
+	for (int i = 0; i < NUM_CSM; ++i) {
+		float xn = csm_range[i] * tan_half_hfov;
+		float xf = csm_range[i + 1] * tan_half_hfov;
+		float yn = csm_range[i] * tan_half_vfov;
+		float yf = csm_range[i + 1] * tan_half_vfov;
+
+		printf("\nCSM #%d\n", i);
+		printf("\tnear_x: %f far_x: %f\n", xn, xf);
+		printf("\tnear_y: %f far_y: %f\n", yn, yf);
+
+		// corners in view space
+		vec4 frustum_corners[8] = {
+			// near plane
+			vec4(xn, yn, csm_range[i], 1.f),
+			vec4(-xn, yn, csm_range[i], 1.f),
+			vec4(xn, -yn, csm_range[i], 1.f),
+			vec4(-xn, -yn, csm_range[i], 1.f),
+			// far plane
+			vec4(xf, yf, csm_range[i + 1], 1.f),
+			vec4(-xf, yf, csm_range[i + 1], 1.f),
+			vec4(xf, -yf, csm_range[i + 1], 1.f),
+			vec4(-xf, -yf, csm_range[i + 1], 1.f),
+		};
+
+		// change to light space
+		vec4 frustum_corners_L[8];
+
+		float min_x = std::numeric_limits<float>::max();
+		float max_x = std::numeric_limits<float>::min();
+		float min_y = std::numeric_limits<float>::max();
+		float max_y = std::numeric_limits<float>::min();
+		float min_z = std::numeric_limits<float>::max();
+		float max_z = std::numeric_limits<float>::min();
+
+		// find local bounding box
+		for (int j = 0; j < 8; ++j) {
+			vec4 view = view_matrix_inv * frustum_corners[j];
+			//printf("\n\tViewspace: (%f, %f, %f, %f) =>\n", view.x, view.y, view.z, view.w);
+			frustum_corners_L[j] = light_view_matrix * view;
+			//printf("\tLight space: (%f, %f, %f, %f)\n", frustum_corners_L[j].x, frustum_corners_L[j].y, frustum_corners_L[j].z, frustum_corners_L[j].w);
+
+			min_x = fminf(min_x, frustum_corners_L[j].x);
+			max_x = fmaxf(max_x, frustum_corners_L[j].x);
+			min_y = fminf(min_y, frustum_corners_L[j].y);
+			max_y = fmaxf(max_y, frustum_corners_L[j].y);
+			min_z = fminf(min_z, frustum_corners_L[j].z);
+			max_z = fmaxf(max_z, frustum_corners_L[j].z);
+		}
+
+		// set VP matrix for light (flip-z)
+		light_vp_matrices[i] = ortho(min_x, max_x, min_y, max_y, -max_z, -min_z) * light_view_matrix;
+		printf("\n\tBounding Box: %f %f %f %f %f %f\n", min_x, max_x, min_y, max_y, -max_z, -min_z);
+		shadow_sbpv_matrices[i] = scale_bias_matrix * light_vp_matrices[i];
+	}
 
 	// calculate model matrix
 	terrain_model = calculate_model(vec3(0.0f, -50.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(15.0f, 15.0f, 15.0f));
@@ -741,10 +965,14 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 		(*castleShader).setBool("display_normal_mapping", 1);
 	else
 		(*castleShader).setBool("display_normal_mapping", 0);
+	// shadow
 	glActiveTexture(GL_TEXTURE2);
 	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
 	(*castleShader).setInt("shadow_tex", 2);
 	(*castleShader).setMat4("shadow_matrix", shadow_matrix);
+
+	// cascade shadow
+	CSM_uniform(castleShader, model_castle);
 
 	(*castleShader).setMat4("projection", projection);
 	(*castleShader).setMat4("view", view);
@@ -771,11 +999,14 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	// Draw particles using updated buffers using additive blending.
 	glBindVertexArray(particle_vao);
 	glUseProgram(renderProgram);
-	model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.1f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
+	model_smoke = calculate_model(vec3(-20.95f, 9.5f, 0.08f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(1.0f, 1.0f, 1.0f));
 	glUniformMatrix4fv(0, 1, GL_FALSE, value_ptr(view * model_smoke));
 	glUniformMatrix4fv(1, 1, GL_FALSE, value_ptr(projection));
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, particleTexture);
+	if(rain)
+		glBindTexture(GL_TEXTURE_2D, particleTexture_smoke);
+	else
+		glBindTexture(GL_TEXTURE_2D, particleTexture_spark);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_ONE, GL_ONE);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, particleOut.shaderStorageBuffer);
@@ -805,7 +1036,10 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*waterShader).setVec3("light_pos", light_position);
 	(*waterShader).setVec3("eye_pos", camera.Position);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferOut);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	if(rain)
+		glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	else
+		glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*waterShader).setInt("tex_cubemap", 0);
 	glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, 179 * 179);
 
@@ -822,7 +1056,10 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*splatShader).setMat4("view", view);
 	(*splatShader).setVec3("light_pos", light_position);
 	(*splatShader).setVec3("eye_pos", camera.Position);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	if (rain)
+		glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	else
+		glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*splatShader).setInt("tex_cubemap", 0);
 
 	(*splatShader).setMat4("model", model_splat);
@@ -839,10 +1076,13 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 			(*soldierShader).setBool("using_normal_color", 1);
 		else
 			(*soldierShader).setBool("using_normal_color", 0);
+		// shadow
 		glActiveTexture(GL_TEXTURE2);
 		glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
 		(*soldierShader).setInt("shadow_tex", 2);
 		(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
+		// cascade shadow
+		CSM_uniform(soldierShader, model_soldier);
 
 		(*soldierShader).setMat4("projection", projection);
 		(*soldierShader).setMat4("view", view);
@@ -859,6 +1099,7 @@ void My_Display()
 	// shadow test
 	glEnable(GL_DEPTH_TEST);
 	shadow(Models, Shaders, model_matrixs);
+	cascade_shadow(Models, Shaders, model_matrixs);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	// shadow test end
 
@@ -871,7 +1112,7 @@ void My_Display()
 	glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(rightQuadVertices), &rightQuadVertices);
 
 	// view/projection transformations
-	glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 1000.0f);
+	projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 1000.0f);
 	glm::mat4 view = camera.GetViewMatrix();
 
 	// render
@@ -882,7 +1123,10 @@ void My_Display()
 
 	// Draw skybox
 	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	if (rain)
+		glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
+	else
+		glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
 	(*skyboxShader).use();
 	glBindVertexArray(skyboxVAO);
 	(*skyboxShader).setInt("tex_cubemap", 0);
@@ -895,47 +1139,6 @@ void My_Display()
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glEnable(GL_DEPTH_TEST);
 
-	// Draw terrain
-	// ------------
-	/*
-	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
-	static const GLfloat one = 1.0f;
-	glClearBufferfv(GL_DEPTH, 0, &one);
-	(*terrainShader).use();
-	// Bind Textures using texture units
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
-	(*terrainShader).setInt("tex_displacement", 0);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, terrainTexture);
-	(*terrainShader).setInt("tex_color", 1);
-
-	// shadow uniform
-	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*terrainShader).setInt("shadow_tex", 2);
-	(*terrainShader).setMat4("shadow_matrix", shadow_matrix);
-
-	glBindVertexArray(terrainVAO);
-
-	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
-	(*terrainShader).setMat4("proj_matrix", projection);
-	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
-	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
-	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
-	(*terrainShader).setInt("tex_color", 1);
-
-	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LEQUAL);
-
-	if (wireframe)
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-	else
-		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
-	glBindVertexArray(0);
-	*/
 	// render the loaded models
 	// ------------------------------
 	Render_Loaded_Model(projection, view);
@@ -1044,20 +1247,13 @@ void My_Reshape(int width, int height)
 	lastY = SCR_HEIGHT / 2.0f;
 	prevY = SCR_HEIGHT / 2.0f;
 
-	glGenFramebuffers(1, &shadowBuffer.fbo);
-	glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer.fbo);
-	glGenTextures(1, &shadowBuffer.depthMap);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
-
-	glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadowBuffer.depthMap, 0);
-	glDrawBuffer(GL_NONE);
-	glReadBuffer(GL_NONE);
-	//glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	// shadow
+	create_frame(shadowBuffer, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
+	// cascade shadow
+	shadowBuffers.resize(NUM_CSM);
+	for (auto& frame : shadowBuffers) {
+		create_frame(frame, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
+	}
 
 	// framebuffer configuration
 	// -------------------------
@@ -1141,7 +1337,11 @@ void My_Timer(int val)
 			AddDrop();
 		timeElapsed = 0;
 	}
-	AddParticle(1);
+	if (timerCount > 100)
+	{
+		AddParticle(50);
+		timerCount = 0;
+	}
 	glutPostRedisplay();
 	if (timer_enabled)
 		glutTimerFunc(timer_speed, My_Timer, val);
@@ -1285,6 +1485,8 @@ void My_Keyboard(unsigned char key, int x, int y)
 			break;
 		case 'r':
 			rain = !rain;
+			if(rain)
+				SoundEngine->play2D("audio/let it go-cut.mp3", true);
 			break;
 		default:
 			cout << "Nothing" << endl;
