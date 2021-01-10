@@ -23,7 +23,7 @@ layout(binding = 0, offset = 0) uniform atomic_uint inCount;
 layout(binding = 1, offset = 0) uniform atomic_uint outCount;                                                   
 layout(location = 0) uniform float deltaTime;                                                                   
                                                                                                                 
-const vec3 windAccel = vec3(0.015, 0, 0);                                                                       
+const vec3 windAccel = vec3(0, 0, 0);                                                                       
                                                                                                                 
 void main(void)                                                                                                 
 {                                                                                                               
@@ -31,7 +31,7 @@ void main(void)
     if(idx < atomicCounter(inCount))                                                                            
     {                                                                                                           
         float lifeTime = inParticles[idx].lifeTime + deltaTime;                                                 
-        if(lifeTime < 10.0)                                                                                     
+        if(lifeTime < 5.0)                                                                                     
         {                                                                                                       
             uint outIdx = atomicCounterIncrement(outCount);                                                     
             outParticles[outIdx].position = inParticles[idx].position + inParticles[idx].velocity * deltaTime;  
