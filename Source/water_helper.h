@@ -16,16 +16,6 @@ struct refraction_frame_t
 	GLuint depthTexture;
 };
 
-void check_frame()
-{
-	GLenum ret = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-
-	if (ret != GL_FRAMEBUFFER_COMPLETE) {
-		std::cerr << "FRAMEBUFFER ERROR\nstatus:" << ret << std::endl;
-		exit(EXIT_FAILURE);
-	}
-}
-
 void create_reflection_frame(reflection_frame_t& frame, int width, int height, bool is_reshape = false)
 {
 	if (!is_reshape) {
