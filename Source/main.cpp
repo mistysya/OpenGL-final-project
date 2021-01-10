@@ -109,6 +109,7 @@ vector<mat4> model_soldier;
 mat4 model_smoke;
 mat4 terrain_model;
 mat4 model_water;
+mat4 model_rain;
 vector<mat4> model_matrixs;
 mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 180.0f);
 
@@ -147,6 +148,7 @@ Shader* terrainShader;
 Shader *depthShader;
 Shader *ssaoShader;
 Shader *waterShader;
+Shader *rainShader;
 vector<Shader*> Shaders;
 
 //particle system declare
@@ -203,12 +205,12 @@ const char *skyboxTexPath[6] = { "..\\Assets\\cubemaps2\\posx.jpg",
 								 "..\\Assets\\cubemaps2\\negy.png",
 								 "..\\Assets\\cubemaps2\\posz.jpg",
 								 "..\\Assets\\cubemaps2\\negz.jpg" };
-const char *rain_skyboxTexPath[6] = { "..\\Assets\\cubemaps2\\rain\\posx.jpg",
-									  "..\\Assets\\cubemaps2\\rain\\negx.jpg",
-									  "..\\Assets\\cubemaps2\\rain\\posy.jpg",
-									  "..\\Assets\\cubemaps2\\rain\\negy.jpg",
-									  "..\\Assets\\cubemaps2\\rain\\posz.jpg",
-									  "..\\Assets\\cubemaps2\\rain\\negz.jpg" };
+const char *rain_skyboxTexPath[6] = { "..\\Assets\\cubemaps3\\posx.jpg",
+									  "..\\Assets\\cubemaps3\\negx.jpg",
+									  "..\\Assets\\cubemaps3\\posy.jpg",
+									  "..\\Assets\\cubemaps3\\negy.jpg",
+									  "..\\Assets\\cubemaps3\\posz.jpg",
+									  "..\\Assets\\cubemaps3\\negz.jpg" };
 
 // framebuffer vertice
 float leftQuadVertices[] = {
@@ -371,7 +373,7 @@ void AddDrop()
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferIn);
 	glDispatchCompute(10, 10, 1);
 	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-	model_water *= translate(mat4(1.0f), vec3(0.0, -0.00075, 0.0));
+	model_rain *= translate(mat4(1.0f), vec3(0.0, -0.00075, 0.0));
 }
 
 // Add count particles to input buffers.
@@ -691,7 +693,7 @@ void My_Init()
 	terrain_model = calculate_model(vec3(0.0f, -50.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(15.0f, 15.0f, 15.0f));
 	model_castle = calculate_model(vec3(-55.0f, 10.5f, 21.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.7f, 0.7f, 0.7f));
 	model_splat = calculate_model(vec3(13.0f, -1.5f, -6.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.4f, 0.1f, 0.4f));
-	model_water = calculate_model(vec3(-45.0f, -53.95f, -40.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.22f, 1.0f, 0.42f)); //-54
+	model_rain = calculate_model(vec3(185.0f, -58.95f, -170.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 1.0f, 0.5f)); //-54
 	model_water = calculate_model(vec3(-45.0f, 5.95f, -40.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(20.f, 1.0f, 30.f)); //-54
 	//model_soldier = calculate_model(vec3(-65.0f, 10.75f, 21.5f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
 
@@ -810,7 +812,6 @@ void My_Init()
 	create_refraction_frame(w_refract, SCR_WIDTH, SCR_HEIGHT);
 	// Initialize random seed for water ripple effect
 	// -----------------------------------------
-	/*
 	srand(time(NULL));
 	{
 		program_drop = glCreateProgram();
@@ -824,7 +825,7 @@ void My_Init()
 	{
 		program_water = glCreateProgram();
 		GLuint cs = glCreateShader(GL_COMPUTE_SHADER);
-		char** water_cs = loadShaderSource("water.cs.glsl");
+		char** water_cs = loadShaderSource("rain.cs.glsl");
 		glShaderSource(cs, 1, water_cs, NULL);
 		glCompileShader(cs);
 		glAttachShader(program_water, cs);
@@ -863,7 +864,7 @@ void My_Init()
 	glBufferStorage(GL_ELEMENT_ARRAY_BUFFER, sizeof(uint) * 6, indices, GL_DYNAMIC_STORAGE_BIT);
 	
 	AddDrop();
-	*/
+
 	// Add BGM
 	SoundEngine->removeAllSoundSources();
 	SoundEngine->play2D("audio/breakout.mp3", true);
@@ -989,7 +990,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	// render the loaded splat model and water ripple effect here ahhhhhhhhhhhhh
 	// --------------------------------------
 	// Update water grid.
-	/*
+	
 	glUseProgram(program_water);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferIn);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, waterBufferOut);
@@ -997,19 +998,19 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	glDispatchCompute(10, 10, 1);
 	glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
-	(*waterShader).use();
+	(*rainShader).use();
 	glBindVertexArray(ripple_vao);
-	(*waterShader).setMat4("projection", projection);
-	(*waterShader).setMat4("view", view);
-	(*waterShader).setMat4("model", model_water);
-	(*waterShader).setVec3("light_pos", light_position);
-	(*waterShader).setVec3("eye_pos", camera.Position);
+	(*rainShader).setMat4("projection", projection);
+	(*rainShader).setMat4("view", view);
+	(*rainShader).setMat4("model", model_rain);
+	(*rainShader).setVec3("light_pos", light_position);
+	(*rainShader).setVec3("eye_pos", camera.Position);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferOut);
 	if(rain)
 		glBindTexture(GL_TEXTURE_CUBE_MAP, rain_skyboxTexture);
 	else
 		glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
-	(*waterShader).setInt("tex_cubemap", 0);
+	(*rainShader).setInt("tex_cubemap", 0);
 	glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0, 179 * 179);
 
 	std::swap(waterBufferIn, waterBufferOut);
@@ -1033,7 +1034,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 
 	(*splatShader).setMat4("model", model_splat);
 	(*splatModel).Draw((*splatShader));
-	*/
+	
 
 	// render the loaded soldier firing model
 	// --------------------------------------
@@ -1648,6 +1649,8 @@ int main(int argc, char *argv[])
 	ssaoShader = &s_ssao;
 	Shader s_water("water.vs.glsl", "water.fs.glsl");
 	waterShader = &s_water;
+	Shader s_rain("rain.vs.glsl", "rain.fs.glsl");
+	rainShader = &s_rain;
 
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
