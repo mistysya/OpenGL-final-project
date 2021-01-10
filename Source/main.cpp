@@ -4,6 +4,7 @@
 //#include "shader_m.h"
 #include "mesh.h"
 #include "time.h"
+#include "water_helper.h"
 
 #define MENU_TIMER_START 1
 #define MENU_TIMER_STOP 2
@@ -92,6 +93,9 @@ struct WaterColumn
 	float height;
 	float flow;
 };
+// water reflection & refraction
+reflection_frame_t w_reflect;
+refraction_frame_t w_refract;
 
 // model_matrix
 mat4 model_castle;
@@ -173,6 +177,8 @@ string soldierFiringPath = "soldier_firing/soldier_firing.obj";
 Model *soldierFiringModel;
 string splatPath = "Splat/Splat_01.obj";
 Model *splatModel;
+string waterQuadPath = "water/quad.obj";
+Model *waterQuadModel;
 vector<Model*> Models;
 
 // skybox texture path
@@ -219,6 +225,8 @@ unsigned int terrainTexture;
 unsigned int castleNormalTexture;
 unsigned int soldierNormalTexture;
 unsigned int terrainNormalTexture;
+unsigned int waterReflectionTexture;
+unsigned int waterRefractionTexture;
 
 char** loadShaderSource(const char* file)
 {
@@ -515,7 +523,8 @@ void My_Init()
 	terrain_model = calculate_model(vec3(0.0f, -50.0f, 0.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(15.0f, 15.0f, 15.0f));
 	model_castle = calculate_model(vec3(-55.0f, 10.5f, 21.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.7f, 0.7f, 0.7f));
 	model_splat = calculate_model(vec3(13.0f, -1.5f, -6.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.4f, 0.1f, 0.4f));
-	model_water = calculate_model(vec3(60.0f, -63.0f, -57.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.16f, 1.0f, 0.18f));
+	model_water = calculate_model(vec3(-45.0f, -53.95f, -40.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(0.22f, 1.0f, 0.42f)); //-54
+	model_water = calculate_model(vec3(-45.0f, 5.95f, -40.0f), 0.0f, vec3(1.0, 0.0, 0.0), vec3(20.f, 1.0f, 30.f)); //-54
 	//model_soldier = calculate_model(vec3(-65.0f, 10.75f, 21.5f), -90.0f, vec3(1.0, 0.0, 0.0), vec3(0.5f, 0.5f, 0.5f));
 
 	vector<GLfloat> soldier_angle;
@@ -628,8 +637,12 @@ void My_Init()
 
 	glGenFramebuffers(1, &ssao_fbo);
 
+	// Initialize water reflection & refraction
+	create_reflection_frame(w_reflect, SCR_WIDTH, SCR_HEIGHT);
+	create_refraction_frame(w_refract, SCR_WIDTH, SCR_HEIGHT);
 	// Initialize random seed for water ripple effect
 	// -----------------------------------------
+	/*
 	srand(time(NULL));
 	{
 		program_drop = glCreateProgram();
@@ -680,11 +693,12 @@ void My_Init()
 	glGenBuffers(1, &ebo);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
 	glBufferStorage(GL_ELEMENT_ARRAY_BUFFER, sizeof(uint) * 6, indices, GL_DYNAMIC_STORAGE_BIT);
-
+	
 	AddDrop();
+	*/
 }
 
-void Render_Loaded_Model(mat4 projection, mat4 view)
+void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0), float height = 100)
 {
 	// render terrain
 	// --------------
@@ -714,6 +728,9 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
 	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
 	(*terrainShader).setInt("tex_color", 1);
+	//(*terrainShader).setVec3("plane", plane);
+	//(*terrainShader).setFloat("plane_height", height);
+	//(*castleShader).setMat4("model", terrain_model);
 
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LEQUAL);
@@ -750,6 +767,9 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	(*castleShader).setMat4("view", view);
 	(*castleShader).setVec3("light_pos", light_position);
 	(*castleShader).setVec3("eye_pos", camera.Position);
+	//vec3 plane = vec3(0, -1, 0);
+	(*castleShader).setVec3("plane", plane);
+	(*castleShader).setFloat("plane_height", height);
 
 	(*castleShader).setMat4("model", model_castle);
 	(*castleModel).Draw((*castleShader));
@@ -790,6 +810,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 	// render the loaded splat model and water ripple effect here ahhhhhhhhhhhhh
 	// --------------------------------------
 	// Update water grid.
+	/*
 	glUseProgram(program_water);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, waterBufferIn);
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, waterBufferOut);
@@ -827,6 +848,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 
 	(*splatShader).setMat4("model", model_splat);
 	(*splatModel).Draw((*splatShader));
+	*/
 
 	// render the loaded soldier firing model
 	// --------------------------------------
@@ -848,6 +870,9 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 		(*soldierShader).setMat4("view", view);
 		(*soldierShader).setVec3("light_pos", light_position);
 		(*soldierShader).setVec3("eye_pos", camera.Position);
+		//vec3 plane = vec3(0, -1, 0);
+		(*soldierShader).setVec3("plane", plane);
+		(*soldierShader).setFloat("plane_height", height);
 
 		(*soldierShader).setMat4("model", model_soldier[i]);
 		(*soldierFiringModel).Draw((*soldierShader));
@@ -877,7 +902,7 @@ void My_Display()
 	// render
 	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 	glEnable(GL_DEPTH_TEST);
-	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+	glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	// Draw skybox
@@ -895,50 +920,58 @@ void My_Display()
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 	glEnable(GL_DEPTH_TEST);
 
-	// Draw terrain
-	// ------------
-	/*
-	mat4 shadow_matrix = shadow_sbpv_matrix * terrain_model;
-	static const GLfloat one = 1.0f;
-	glClearBufferfv(GL_DEPTH, 0, &one);
-	(*terrainShader).use();
-	// Bind Textures using texture units
-	glActiveTexture(GL_TEXTURE0);
-	glBindTexture(GL_TEXTURE_2D, terrainHeightTexture);
-	(*terrainShader).setInt("tex_displacement", 0);
-	glActiveTexture(GL_TEXTURE1);
-	glBindTexture(GL_TEXTURE_2D, terrainTexture);
-	(*terrainShader).setInt("tex_color", 1);
-
-	// shadow uniform
-	glActiveTexture(GL_TEXTURE2);
-	glBindTexture(GL_TEXTURE_2D, shadowBuffer.depthMap);
-	(*terrainShader).setInt("shadow_tex", 2);
-	(*terrainShader).setMat4("shadow_matrix", shadow_matrix);
-
-	glBindVertexArray(terrainVAO);
-
-	(*terrainShader).setMat4("mv_matrix", view * terrain_model);
-	(*terrainShader).setMat4("proj_matrix", projection);
-	(*terrainShader).setMat4("mvp_matrix", projection * view * terrain_model);
-	(*terrainShader).setFloat("dmap_depth", enable_height ? dmap_depth : 0.0f);
-	(*terrainShader).setBool("enable_fog", enable_fog ? 1 : 0);
-	(*terrainShader).setInt("tex_color", 1);
-
-	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LEQUAL);
-
-	if (wireframe)
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-	else
-		glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-	glDrawArraysInstanced(GL_PATCHES, 0, 4, 64 * 64);
-	glBindVertexArray(0);
-	*/
 	// render the loaded models
 	// ------------------------------
+	glEnable(GL_CLIP_DISTANCE0);
+	glBindFramebuffer(GL_FRAMEBUFFER, w_reflect.fbo);
+	glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	float cam_distance = 2 * camera.Position.y - 6;
+	camera.Position.y -= cam_distance;
+	camera.Pitch = -camera.Pitch;
+	view = camera.GetViewMatrix();
+	// skybox
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTexture);
+	(*skyboxShader).use();
+	glBindVertexArray(skyboxVAO);
+	(*skyboxShader).setInt("tex_cubemap", 0);
+
+	pv_matrix = projection * view;
+	(*skyboxShader).setMat4("pv_matrix", pv_matrix);
+	(*skyboxShader).setVec3("cam_pos", camera.Position);
+
+	glDisable(GL_DEPTH_TEST);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glEnable(GL_DEPTH_TEST);
+	Render_Loaded_Model(projection, view, vec3(0, 1, 0), -6);
+	camera.Position.y += cam_distance;
+	camera.Pitch = -camera.Pitch;
+	view = camera.GetViewMatrix();
+
+	glBindFramebuffer(GL_FRAMEBUFFER, w_refract.fbo);
+	glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	Render_Loaded_Model(projection, view, vec3(0, -1, 0), 6);
+
+	glDisable(GL_CLIP_DISTANCE0);
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 	Render_Loaded_Model(projection, view);
+	mat4 shadow_matrix = shadow_sbpv_matrix * model_water;
+	(*waterShader).use();
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, w_reflect.texture);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, w_refract.texture);
+	(*waterShader).setMat4("projection", projection);
+	(*waterShader).setMat4("view", view);
+	(*waterShader).setVec3("light_pos", light_position);
+	(*waterShader).setVec3("eye_pos", camera.Position);
+	(*waterShader).setMat4("model", model_water);
+	(*waterShader).setInt("reflectionTexture", 0);
+	(*waterShader).setInt("refractionTexture", 1);
+	(*waterQuadModel).Draw((*waterShader));
 
 	// draw ssao
 	// --------------------------------
@@ -1128,6 +1161,10 @@ void My_Reshape(int width, int height)
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height, 0, GL_RGBA, GL_FLOAT, NULL);
 	glBindTexture(GL_TEXTURE_2D, gbuffer.depth_map);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+
+	// Initialize water reflection & refraction
+	create_reflection_frame(w_reflect, SCR_WIDTH, SCR_HEIGHT, true);
+	create_refraction_frame(w_refract, SCR_WIDTH, SCR_HEIGHT, true);
 }
 
 void My_Timer(int val)
@@ -1373,8 +1410,8 @@ int main(int argc, char *argv[])
 	glutInitDisplayMode(GLUT_3_2_CORE_PROFILE | GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
 #endif
 
-	//glutInitContextVersion(4, 2);
-	//glutInitContextProfile(GLUT_CORE_PROFILE);
+	glutInitContextVersion(4, 2);
+	glutInitContextProfile(GLUT_CORE_PROFILE);
 
 	glutInitWindowPosition(100, 100);
 	glutInitWindowSize(1280, 720);
@@ -1413,6 +1450,8 @@ int main(int argc, char *argv[])
 	soldierFiringModel = &m_soldierFiring;
 	Model m_splat(splatPath);
 	splatModel = &m_splat;
+	Model m_waterQuda(waterQuadPath);
+	waterQuadModel = &m_waterQuda;
 
 	My_Init();
 
