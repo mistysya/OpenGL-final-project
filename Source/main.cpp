@@ -135,6 +135,10 @@ float csm_range[NUM_CSM + 1];
 float csm_range_C[NUM_CSM];
 bool use_cascade = false;
 
+//grass declare
+GLuint grass_buffer;
+GLuint grass_vao;
+
 // shader
 Shader *castleShader;
 Shader *soldierShader;
@@ -147,6 +151,7 @@ Shader* terrainShader;
 Shader *depthShader;
 Shader *ssaoShader;
 Shader *waterShader;
+Shader* grassShader;
 vector<Shader*> Shaders;
 
 //particle system declare
@@ -486,6 +491,29 @@ void My_Init()
 	glGenVertexArrays(1, &particle_vao);
 	glBindVertexArray(particle_vao);
 	//***particle system init end***
+
+	//***grass init***
+	static const GLfloat grass_blade[] =
+	{
+		-0.3f, 0.0f,
+		 0.3f, 0.0f,
+		-0.20f, 1.0f,
+		 0.1f, 1.3f,
+		-0.05f, 2.3f,
+		 0.0f, 3.3f
+	};
+
+	glGenBuffers(1, &grass_buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, grass_buffer);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(grass_blade), grass_blade, GL_STATIC_DRAW);
+
+	glGenVertexArrays(1, &grass_vao);
+	glBindVertexArray(grass_vao);
+
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+	glEnableVertexAttribArray(0);
+	//***grass init end***
+
 
 	// set shader uniform variable
 	(*leftScreenShader).use();
@@ -985,6 +1013,19 @@ void Render_Loaded_Model(mat4 projection, mat4 view, vec3 plane = vec3(0, -1, 0)
 	glDepthMask(GL_TRUE);
 	// Swap input and output buffer.
 	std::swap(particleIn, particleOut);
+
+
+	//draw grass
+	(*grassShader).use();
+	(*grassShader).setMat4("mvpMatrix", projection * view * model_castle);
+	(*grassShader).setInt("Time", glutGet(GLUT_ELAPSED_TIME) * 0.05);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LEQUAL);
+
+	glBindVertexArray(grass_vao);
+	glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 6, 1024 * 1024);
+	//draw grass end
 
 	// render the loaded splat model and water ripple effect here ahhhhhhhhhhhhh
 	// --------------------------------------
@@ -1648,6 +1689,8 @@ int main(int argc, char *argv[])
 	ssaoShader = &s_ssao;
 	Shader s_water("water.vs.glsl", "water.fs.glsl");
 	waterShader = &s_water;
+	Shader s_grass("grass.vert.glsl", "grass.frag.glsl");
+	grassShader = &s_grass;
 
 	Model m_castle(castlePath);
 	castleModel = &m_castle;
