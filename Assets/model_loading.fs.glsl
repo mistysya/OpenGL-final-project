@@ -1,12 +1,16 @@
 #version 420 core
 out vec4 FragColor;
 
+const int NUM_CSM = 3;
+
 in vec3 Normal;
 in vec2 TexCoords;
 in vec3 N;
 in vec3 L;
 in vec3 H;
 in vec4 shadow_coord;
+in vec4 CSM_coord[NUM_CSM];
+in float depth_current_position;
 in vec3 tangentLightPos;
 in vec3 tangentViewPos;
 in vec3 tangentFragPos;
@@ -14,8 +18,12 @@ in vec3 tangentFragPos;
 uniform sampler2D texture_diffuse1;
 uniform sampler2D texture_normal1; // NOTICE texture index
 uniform sampler2DShadow shadow_tex;
+uniform sampler2DShadow shadow_texes[NUM_CSM];
 uniform bool using_normal_color;
 uniform bool display_normal_mapping;
+
+// CSM
+uniform float uCascadedRange_C[NUM_CSM];
 
 // Material properties
 uniform vec3 diffuse_albedo = vec3(0.35);
@@ -25,6 +33,12 @@ uniform float specular_power = 200.0;
 // Position of light and eyes
 uniform vec3 light_pos;
 uniform vec3 eye_pos;
+
+// shadow factor
+float shadow_factor;
+vec4 cascaded_indicator = vec4(0.f);
+
+uniform bool use_cascade;
 
 void main()
 {    
@@ -54,15 +68,45 @@ void main()
 		specular = 0.7 * specular + 0.2 * vec3(0.3) * spec;
 	}
 
-    float shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.6 + 0.4;
+	// CSM
+	if (use_cascade)
+	{
+		for (int i = 0; i < NUM_CSM; ++i) {
+			if (depth_current_position <= uCascadedRange_C[i]) {
+				shadow_factor = textureProj(shadow_texes[i], CSM_coord[i]) * 0.8 + 0.2;
+
+				// visualize frustum sections
+				if (i == 0) {
+					cascaded_indicator = vec4(0.1f, 0.f, 0.f, 0.f);
+				}
+				else if (i == 1) {
+					cascaded_indicator = vec4(0.f, 0.1f, 0.f, 0.f);
+				}
+				else if (i == 2) {
+					cascaded_indicator = vec4(0.f, 0.f, 0.1f, 0.f);
+				}
+
+				break;
+			}
+		}
+	}
+	else
+	{
+		// SM
+		shadow_factor = textureProj(shadow_tex, shadow_coord) * 0.8 + 0.2;
+	}
+	
 
     if (using_normal_color)
         FragColor = vec4(Normal, 1.0f);
     else {
         //FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
         //FragColor = vec4(shadow_factor, shadow_factor, shadow_factor, 1.0);
-        FragColor = texture(texture_diffuse1, TexCoords) * vec4(shadow_factor * (ambient + diffuse + specular), 1.0);
-        //FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
+        if(use_cascade)
+			FragColor = texture(texture_diffuse1, TexCoords) * vec4(shadow_factor * (ambient + diffuse + specular), 1.0) + cascaded_indicator;
+		else
+			FragColor = texture(texture_diffuse1, TexCoords) * vec4(shadow_factor * (ambient + diffuse + specular), 1.0);
+		//FragColor = texture(texture_diffuse1, TexCoords) * vec4(ambient + diffuse + specular, 1.0);
         //FragColor = vec4(ambient + diffuse + specular, 1.0);
     }
 }

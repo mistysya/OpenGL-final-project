@@ -9,8 +9,6 @@ in vec3 L;
 in vec3 H;
 in vec3 N_ENV;
 in vec3 ENV;
-in vec3 rippleNormal;
-in vec3 rippleView;
 
 uniform samplerCube tex_cubemap;
 uniform sampler2D texture_diffuse1;
@@ -25,10 +23,9 @@ uniform float specular_power = 200.0;
 void main()
 {
     // Normalize the incoming vectors
-	vec3 V = normalize(rippleView);
-    vec3 N = normalize(rippleNormal);
+    vec3 N = normalize(N);
     vec3 L = normalize(L);
-    vec3 H = normalize(L + V);
+    vec3 H = normalize(H);
 
     // Compute the diffuse and specular components for each	fragment
     vec3 ambient = vec3(0.3);
