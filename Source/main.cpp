@@ -336,6 +336,8 @@ mat4 calculate_model_multi_angle(vec3 trans, int num_angle, vector<GLfloat> rad,
 	}
 	model = glm::scale(model, scal);
 	return model;
+}
+
 void cascade_shadow(vector<Model*> Mod, vector<Shader*> Mod_shader, vector<mat4> model_matrix) {
 	(*depthShader).use();
 	glViewport(0, 0, SHADOW_MAP_WIDTH, SHADOW_MAP_HEIGHT);
@@ -1082,7 +1084,7 @@ void Render_Loaded_Model(mat4 projection, mat4 view)
 		(*soldierShader).setInt("shadow_tex", 2);
 		(*soldierShader).setMat4("shadow_matrix", shadow_matrix);
 		// cascade shadow
-		CSM_uniform(soldierShader, model_soldier);
+		CSM_uniform(soldierShader, model_soldier[i]);
 
 		(*soldierShader).setMat4("projection", projection);
 		(*soldierShader).setMat4("view", view);
